@@ -168,6 +168,7 @@ function step(r, input) {
   if (r.state === 'ride') {
     var mx = s.mx, my = s.my, mag = Math.min(1, Math.hypot(mx, my)), back = my < -0.35;
     var thr = back ? 0 : mag, brk = back ? -my : 0;
+    if (s.held.attack) thr = Math.max(thr, 1);                              /* the gas button */
     if (s.held.block) { brk = 1; thr = 0; }
     var steer = Math.abs(mx) > 0.15 ? mx : 0, rate = R.TURN * DT * Math.min(1, 0.25 + Math.abs(b.speed) / 8);
     b.turn = steer ? -steer * rate : b.turn * 0.7;

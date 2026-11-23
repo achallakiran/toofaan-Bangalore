@@ -26,6 +26,9 @@ function attachKeyboard(input, win) {
 var ICON = {
   fist: '<svg viewBox="0 0 24 24" width="46" height="46" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" stroke-linecap="round"><path d="M6 11.5a2 2 0 0 1 2-2h9.5a2 2 0 0 1 2 2V15a5.5 5.5 0 0 1-5.5 5.5h-2.5A5.5 5.5 0 0 1 6 15z"/><path d="M8 9.5V7.2a1.6 1.6 0 0 1 3.2 0v2.3M11.2 9.5V6.6a1.6 1.6 0 0 1 3.2 0v2.9M14.4 9.5V7.2a1.6 1.6 0 0 1 3.2 0v2.3M6 13h3.5a1.8 1.8 0 0 1 0 3.6H8"/></svg>',
   shield: '<svg viewBox="0 0 24 24" width="38" height="38" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 2.5l7.5 3v5.7c0 4.8-3.2 8.8-7.5 10.3-4.3-1.5-7.5-5.5-7.5-10.3V5.5z"/><path d="M12 6v12" opacity=".6"/></svg>',
+  gas: '<svg viewBox="0 0 24 24" width="40" height="40" aria-hidden="true" fill="currentColor"><path d="M12 3l8 9h-5v9H9v-9H4z"/></svg>',
+  brake: '<svg viewBox="0 0 24 24" width="40" height="40" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v6.5M12 16.8v.4"/></svg>',
+  horn: '<svg viewBox="0 0 24 24" width="36" height="36" aria-hidden="true" fill="currentColor"><path d="M3 9.5h4l7-4.5v14l-7-4.5H3z"/><path d="M17 8.5a5 5 0 010 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   bolt: '<svg viewBox="0 0 24 24" width="40" height="40" aria-hidden="true" fill="currentColor"><path d="M13.5 2L4.5 13.5h6.2L9.8 22l9.2-12h-6.3z"/></svg>'
 };
 
@@ -78,7 +81,16 @@ function attachTouch(input, root) {
   document.addEventListener('touchend', function (e) { var n = Date.now(); if (n - lastEnd < 350 && !(e.target && e.target.closest && e.target.closest('#studio,button[data-ok]'))) e.preventDefault(); lastEnd = n; }, { passive: false });
   ['gesturestart', 'gesturechange', 'dblclick'].forEach(function (k) { document.addEventListener(k, function (e) { e.preventDefault(); }, { passive: false }); });
   var fin = root.querySelector('#btnFinisher');
-  return { setFinisherVisible: function (v) { fin.hidden = !v; } };
+  var atk = root.querySelector('#btnAttack'), blk = root.querySelector('#btnBlock'), faces = {
+    fight: { atk: ICON.fist, blk: ICON.shield, fin: ICON.bolt, la: 'Attack', lb: 'Block', lf: 'Finisher' },
+    ride: { atk: ICON.gas, blk: ICON.brake, fin: ICON.horn, la: 'Accelerate', lb: 'Brake', lf: 'Horn' } };
+  /* the same three buttons change their faces: on the bike they are gas, brake and horn; in a brawl, attack, block and finisher */
+  function setMode(m) {
+    var f = faces[m] || faces.fight; atk.innerHTML = f.atk; blk.innerHTML = f.blk; fin.innerHTML = f.fin;
+    atk.setAttribute('aria-label', f.la); blk.setAttribute('aria-label', f.lb); fin.setAttribute('aria-label', f.lf);
+    atk.classList.toggle('gas', m === 'ride'); blk.classList.toggle('brk', m === 'ride');
+  }
+  return { setFinisherVisible: function (v) { fin.hidden = !v; }, setMode: setMode };
 }
 
 module.exports = { attachKeyboard: attachKeyboard, attachTouch: attachTouch };

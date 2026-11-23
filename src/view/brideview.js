@@ -47,6 +47,33 @@ function building(rn, w, d, H, kind) {
   return B;
 }
 
+/* ---- street clutter on the pavement, in its own frame: +x away from the road, +z along it ---- */
+var STALLC = ['#e2552b', '#1b9aaa', '#f2b705', '#2f9e44', '#d1397a'].map(col), BARR = col('#e8e4da'), BARR2 = col('#d8452b'), GARB = ['#3a3a36', '#6b5a44', '#8a8f7a', '#4f6a3c', '#a58a5a'].map(col), CART = col('#8a5a2b'), WHEEL = col('#222');
+function clutter(rn, kind) {
+  var B = [], q;
+  function box(x0, y0, z0, x1, y1, z1, c) { B.push({ x0: x0, y0: y0, z0: z0, x1: x1, y1: y1, z1: z1, c: c }); }
+  if (kind === 'stall') {                                                    /* a street vendor: table, goods, a big umbrella */
+    var uc = STALLC[Math.floor(rn() * STALLC.length)];
+    box(0, 0.8, 0, 1.4, 1.0, 2.2, CART); box(0.1, 0, 0.1, 0.25, 0.8, 0.25, CART); box(1.15, 0, 0.1, 1.3, 0.8, 0.25, CART); box(0.1, 0, 1.95, 0.25, 0.8, 2.1, CART); box(1.15, 0, 1.95, 1.3, 0.8, 2.1, CART);
+    for (q = 0; q < 4; q++) box(0.15 + rn() * 0.9, 1.0, 0.15 + q * 0.5, 0.45 + rn() * 0.9, 1.0 + 0.2 + rn() * 0.3, 0.45 + q * 0.5, STALLC[Math.floor(rn() * STALLC.length)]);
+    box(0.65, 1.0, 1.05, 0.75, 2.6, 1.15, CART); box(-0.5, 2.6, -0.1, 1.9, 2.85, 2.3, uc); box(-0.2, 2.45, 0.2, 1.6, 2.6, 2.0, uc);
+  } else if (kind === 'cart') {                                              /* a handcart with big wheels */
+    box(0, 0.7, 0, 1.2, 0.95, 2.4, CART); box(0.1, 0.95, 0.1, 1.1, 1.5, 2.3, STALLC[Math.floor(rn() * STALLC.length)]); box(-0.15, 0.1, 0.2, 0, 0.7, 0.5, WHEEL); box(1.2, 0.1, 0.2, 1.35, 0.7, 0.5, WHEEL); box(-0.15, 0.1, 1.9, 0, 0.7, 2.2, WHEEL); box(1.2, 0.1, 1.9, 1.35, 0.7, 2.2, WHEEL);
+  } else if (kind === 'garbage') {                                           /* a heap of rubbish bags */
+    for (q = 0; q < 9; q++) { var gx = rn() * 1.6, gz = rn() * 1.8, gs = 0.3 + rn() * 0.4; box(gx, 0, gz, gx + gs, gs * (0.8 + rn()), gz + gs, GARB[Math.floor(rn() * GARB.length)]); }
+  } else if (kind === 'barricade') {                                         /* a striped police barricade */
+    for (q = 0; q < 5; q++) box(0, 0.95, q * 0.4, 0.12, 1.15, q * 0.4 + 0.4, q % 2 ? BARR : BARR2); box(0, 0, 0.1, 0.12, 0.95, 0.2, WHEEL); box(0, 0, 1.7, 0.12, 0.95, 1.8, WHEEL);
+  } else if (kind === 'parked') {                                            /* a parked scooter */
+    box(0, 0.5, 0, 0.5, 0.9, 1.7, STALLC[Math.floor(rn() * STALLC.length)]); box(0.05, 0.9, 0.5, 0.45, 1.05, 1.0, WHEEL); box(0.1, 0, 0.1, 0.4, 0.5, 0.4, WHEEL); box(0.1, 0, 1.3, 0.4, 0.5, 1.6, WHEEL); box(0.0, 0.9, 1.45, 0.5, 1.3, 1.55, WALLG);
+  } else if (kind === 'signpost') {                                          /* a board on a post, bent a little */
+    box(0, 0, 0, 0.12, 3.2, 0.12, WALLG); box(-0.06, 2.4, -0.4, 0.2, 3.3, 0.6, STALLC[Math.floor(rn() * STALLC.length)]);
+  } else if (kind === 'lamp') {                                              /* a street lamp */
+    box(0, 0, 0, 0.14, 6.5, 0.14, WALLG); box(-1.4, 6.4, 0, 0.14, 6.55, 0.14, WALLG); box(-1.8, 6.25, -0.1, -1.2, 6.4, 0.25, col('#fff2b8'));
+  }
+  return B;
+}
+var CLUTTER = ['stall', 'stall', 'cart', 'garbage', 'garbage', 'barricade', 'parked', 'parked', 'signpost', 'lamp'];
+
 function createBrideView(scene) {
   var root = new THREE.Group(), mat = new THREE.MeshLambertMaterial({ vertexColors: true }), i;
   scene.add(root);
@@ -71,8 +98,9 @@ function createBrideView(scene) {
   }
 
   /* ---- the tarmac: one ribbon for the whole loop ---- */
+  function rgb(hex) { return boxmesh.hexToRgb(hex); }
   function buildRoad() {
-    var N = road.N, pos = [], nor = [], clr = [], idx = [], k, j, rgb = function (hex) { return boxmesh.hexToRgb(hex); };
+    var N = road.N, pos = [], nor = [], clr = [], idx = [], k, j;
     var cRoad = rgb('#3b4046'), cBroke = rgb('#4a4640'), cPave = rgb('#9c8f7d'), cKerb = rgb('#cfc6b4'), H = C.HALF, P = C.PAVE;
     /* flat-coloured strips from the far pavement across the tarmac to the near pavement (each strip has its own vertices so colours never blend) */
     var strips = [[-H - P, -H - 0.3, cPave, 0.12, 0], [-H - 0.3, -H, cKerb, 0.12, 0], [-H, 0, cRoad, 0.03, 1], [0, H, cRoad, 0.03, 1], [H, H + 0.3, cKerb, 0.12, 0], [H + 0.3, H + P, cPave, 0.12, 0]];
@@ -107,12 +135,39 @@ function createBrideView(scene) {
     g.setAttribute('color', new THREE.Float32BufferAttribute(clr, 3)); g.setIndex(idx); g.computeBoundingSphere();
     roadMesh = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide })); root.add(roadMesh);
     ground = new THREE.Mesh(new THREE.PlaneGeometry(900, 900), new THREE.MeshLambertMaterial({ color: 0x7a6a58 })); ground.rotation.x = -Math.PI / 2; ground.position.y = -0.02; root.add(ground);
-    /* potholes: dark pools (bluish where there is water) */
-    var hg = new THREE.CircleGeometry(1, 14); hg.rotateX(-Math.PI / 2);
+    /* potholes: ragged, stretched and tilted, each its own shape, with a crumbled lighter rim; water ones hold a bluish pool with a glint */
+    function ragged(h, n, k, seed, y, cx, cz, rot, stretch, rr, out) {
+      var pts = [], q, base = out.pos.length / 3;
+      for (q = 0; q < n; q++) {
+        var a = q / n * Math.PI * 2, rad = rr * (0.62 + 0.55 * h3(h.id * 31 + q, seed, 7)), ca = Math.cos(a) * rad * stretch, sa = Math.sin(a) * rad;
+        pts.push([cx + ca * Math.cos(rot) - sa * Math.sin(rot), cz + ca * Math.sin(rot) + sa * Math.cos(rot)]);
+      }
+      out.pos.push(cx, y, cz); out.col.push(k[0], k[1], k[2]);
+      pts.forEach(function (p) { out.pos.push(p[0], y, p[1]); out.col.push(k[0], k[1], k[2]); });
+      for (q = 0; q < n; q++) out.idx.push(base, base + 1 + q, base + 1 + (q + 1) % n);
+    }
+    var HP = { pos: [], col: [], idx: [] };
     road.holes.forEach(function (h) {
-      var f = roadMod.frame(road, h.s, h.l), m = new THREE.Mesh(hg, new THREE.MeshBasicMaterial({ color: h.water ? 0x3d5568 : 0x15171a }));
-      m.position.set(f.x, 0.06, f.z); m.scale.set(h.r, 1, h.r); root.add(m); holeMeshes.push(m);
+      var f = roadMod.frame(road, h.s, h.l), rot = h3(h.id, 3, 1) * Math.PI, st = 1 + h3(h.id, 4, 1) * 0.7, n = 7 + Math.floor(h3(h.id, 5, 1) * 4);
+      ragged(h, n + 2, rgb('#5d554b'), 11, 0.05, f.x, f.z, rot, st, h.r * 1.28, HP);                 /* crumbled edge */
+      ragged(h, n, h.water ? rgb('#34495a') : rgb('#101215'), 23, 0.06, f.x, f.z, rot, st, h.r * 0.95, HP);
+      if (h.water) ragged(h, 5, rgb('#8fb0c4'), 5, 0.065, f.x + Math.cos(rot) * h.r * 0.25, f.z + Math.sin(rot) * h.r * 0.2, rot, 1.4, h.r * 0.28, HP);       /* the glint */
+      else ragged(h, 6, rgb('#050607'), 41, 0.065, f.x, f.z, rot, st, h.r * 0.55, HP);                /* the deep part */
     });
+    /* tar patches and cracks on the broken stretches */
+    function quad(x0, z0, ang, len, wid, k, y) {
+      var c = Math.cos(ang), sn = Math.sin(ang), b0 = HP.pos.length / 3, i2, cs = [[-len, -wid], [len, -wid], [len, wid], [-len, wid]];
+      cs.forEach(function (p) { HP.pos.push(x0 + p[0] * sn + p[1] * c, y, z0 + p[0] * c - p[1] * sn); HP.col.push(k[0], k[1], k[2]); });
+      HP.idx.push(b0, b0 + 1, b0 + 2, b0, b0 + 2, b0 + 3);
+    }
+    for (var sp = 0; sp < road.length; sp += 5) {
+      var ix = Math.floor(sp / road.ds) % road.N, ro = road.rough[ix]; if (ro < 0.3) continue;
+      if (h3(sp, 1, 17) < 0.35 * ro) { var pl = (h3(sp, 2, 17) * 2 - 1) * (C.HALF - 1.5), pf = roadMod.frame(road, sp, pl), g = h3(sp, 3, 17) < 0.5 ? rgb('#2c2f33') : rgb('#4f4b45'); quad(pf.x, pf.z, pf.h, 0.5 + h3(sp, 4, 17) * 0.9, 0.4 + h3(sp, 5, 17) * 0.5, g, 0.045); }
+      if (h3(sp, 6, 17) < 0.5 * ro) { var cl = (h3(sp, 7, 17) * 2 - 1) * (C.HALF - 1), cf = roadMod.frame(road, sp, cl); quad(cf.x, cf.z, cf.h + (h3(sp, 8, 17) - 0.5) * 1.2, 1.2 + h3(sp, 9, 17) * 2.5, 0.05, rgb('#1d1f22'), 0.047); }
+    }
+    var hgeo = new THREE.BufferGeometry();
+    hgeo.setAttribute('position', new THREE.Float32BufferAttribute(HP.pos, 3)); hgeo.setAttribute('color', new THREE.Float32BufferAttribute(HP.col, 3)); hgeo.setIndex(HP.idx);
+    var hm = new THREE.Mesh(hgeo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2 })); root.add(hm); holeMeshes.push(hm);
   }
 
   /* ---- roadside poles, wires and trees ---- */
@@ -149,6 +204,17 @@ function createBrideView(scene) {
   function buildChunk(k) {
     var s0 = k * CHUNK, boxesAll = [], side, sd;
     var P = [], Nn = [], Cc = [], Ix = [], vbase = 0;
+    function emit(Bx, ox, oz, th) {
+      var a = boxmesh.boxesToArrays(Bx, PAL), n = a.positions.length / 3, m, cs = Math.cos(th), sn = Math.sin(th);
+      for (m = 0; m < n; m++) {
+        var lx = a.positions[m * 3], ly = a.positions[m * 3 + 1], lz = a.positions[m * 3 + 2];
+        P.push(ox + lx * cs + lz * sn, ly, oz - lx * sn + lz * cs);
+        var nx = a.normals[m * 3], nz = a.normals[m * 3 + 2]; Nn.push(nx * cs + nz * sn, a.normals[m * 3 + 1], -nx * sn + nz * cs);
+        Cc.push(a.colors[m * 3], a.colors[m * 3 + 1], a.colors[m * 3 + 2]);
+      }
+      for (m = 0; m < a.indices.length; m++) Ix.push(a.indices[m] + vbase);
+      vbase += n;
+    }
     for (sd = 0; sd < 2; sd++) {
       side = sd ? 1 : -1;
       var s = s0, seed = k * 2 + sd, rr = 0;
@@ -160,20 +226,19 @@ function createBrideView(scene) {
         if (rn() < 0.06) { s += 6; continue; }                                    /* a gap: a side lane */
         var f = roadMod.frame(road, s + w / 2, side * setback), th = f.h + (side < 0 ? Math.PI : 0);
         /* local +x points away from the road: for the left side that is the heading's left, so rotate by h; for the right side by h + pi */
-        var cs = Math.cos(th), sn = Math.sin(th), o = roadMod.frame(road, s, side * setback);
-        var B = building(rn, w, d, H, kind), a = boxmesh.boxesToArrays(B, PAL), n = a.positions.length / 3, m;
-        /* origin so that local z (along road) starts at s: for the right side z runs backwards, so start at s + w */
-        var oo = side > 0 ? roadMod.frame(road, s, side * setback) : roadMod.frame(road, s, side * setback);
-        var ox = oo.x, oz = oo.z;
-        if (side > 0) { var fe = roadMod.frame(road, s + w, side * setback); ox = fe.x; oz = fe.z; }
-        for (m = 0; m < n; m++) {
-          var lx = a.positions[m * 3], ly = a.positions[m * 3 + 1], lz = a.positions[m * 3 + 2];
-          P.push(ox + lx * cs + lz * sn, ly, oz - lx * sn + lz * cs);
-          var nx = a.normals[m * 3], nz = a.normals[m * 3 + 2]; Nn.push(nx * cs + nz * sn, a.normals[m * 3 + 1], -nx * sn + nz * cs);
-          Cc.push(a.colors[m * 3], a.colors[m * 3 + 1], a.colors[m * 3 + 2]);
-        }
-        for (m = 0; m < a.indices.length; m++) Ix.push(a.indices[m] + vbase);
-        vbase += n; s += w + 0.4 + rn() * 1.2;
+        var oo = roadMod.frame(road, side > 0 ? s + w : s, side * setback);
+        emit(building(rn, w, d, H, kind), oo.x, oo.z, th);
+        s += w + 0.4 + rn() * 1.2;
+      }
+    }
+    /* the pavement's clutter: vendors, carts, rubbish, barricades, parked scooters, signs and lamps */
+    for (sd = 0; sd < 2; sd++) {
+      side = sd ? 1 : -1; var cr = 0, cn = function () { cr++; return h3(k * 2 + sd, cr, 29); };
+      for (var cs2 = s0 + 3; cs2 < s0 + CHUNK; cs2 += 6 + cn() * 5) {
+        var ci = Math.floor(((cs2 % road.length) / road.ds)) % road.N, busy = road.type[ci] === 'fast' ? 0.35 : 0.8;
+        if (cn() > busy) continue;
+        var ck = CLUTTER[Math.floor(cn() * CLUTTER.length)], off = C.HALF + 0.5 + cn() * 1.3, cf = roadMod.frame(road, cs2, side * off), cth = cf.h + (side < 0 ? Math.PI : 0);
+        emit(clutter(cn, ck), cf.x, cf.z, cth);
       }
     }
     var g = new THREE.BufferGeometry();
@@ -228,7 +293,7 @@ function createBrideView(scene) {
       if (roadMesh) { roadMesh.geometry.dispose(); roadMesh.material.dispose(); }
       if (ground) { ground.geometry.dispose(); ground.material.dispose(); }
       if (wires) { wires.geometry.dispose(); wires.material.dispose(); }
-      treeGeos.forEach(function (g) { g.dispose(); }); holeMeshes.forEach(function (m) { m.material.dispose(); });
+      treeGeos.forEach(function (g) { g.dispose(); }); holeMeshes.forEach(function (m) { m.geometry.dispose(); m.material.dispose(); });
       sky.dispose(); blobGeo.dispose(); blobMat.dispose(); traffic.dispose();
     }
   };

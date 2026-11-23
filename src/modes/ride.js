@@ -28,7 +28,7 @@ function createRide() {
     enter: function (ctx, scope) {
       var view = ctx.view;
       view.setSky('#a9c7da', false);
-      ctx.hudRoot.hidden = false; ctx.touchRoot.hidden = false; ctx.touch.setFinisherVisible(false);
+      ctx.hudRoot.hidden = false; ctx.touchRoot.hidden = false; ctx.touch.setMode('ride'); ctx.touch.setFinisherVisible(true); scope.add(function () { ctx.touch.setMode('fight'); ctx.touch.setFinisherVisible(false); });
       if (!ctx.ride) ctx.ride = rideSim.createRide(ctx.world.seed, ctx.bus, { free: true });
       S.r = ctx.ride; S.t = 0; S.cam = null; S.msgT = 0; S.wordT = 0; S.last = 0; S.shake = 0; S.flashT = 0; S.view = 0; S.shoutT = {}; S.nShout = 0; S.honkQ = false; S.honkT = 0; S.pot = 0;
       S.v = brideview.createBrideView(view.scene); S.v.build(S.r.road); S.v.prime(S.r.bike.s);
@@ -72,7 +72,7 @@ function createRide() {
     step: function (ctx, tick) {
       ctx.input.tick(tick);
       if (ctx.debug.freeze) return;
-      if (ctx.input.state.pressed.attack && S.r.state === 'ride') S.honkQ = true;
+      if (ctx.input.state.pressed.finisher && S.r.state === 'ride') S.honkQ = true;
       rideSim.step(S.r, ctx.input);
     },
     render: function (ctx, alpha) {
