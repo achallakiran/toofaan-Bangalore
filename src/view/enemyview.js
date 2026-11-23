@@ -1,0 +1,181 @@
+/* view: draws the thugs from the simulation. One rig per enemy; poses come from the same keyframed moves as the hero.
+   The attack alert is a small burst of spikes over the head, like the comic-book / Arkham warning flash: white for a blow you can
+   counter, red for one you cannot. It flares when the wind-up starts, then pulses faster as the strike nears. The body also telegraphs
+   (pulled-back arm, weight shift). No rings, dots or lock markers: the lock and the guard are shown by pose alone. */
+'use strict';
+
+/* the get-up, as keyframes from lying on his back to standing in his guard (base) */
+function getupKeys(base) {
+  var pm = require('./posemath'), D = pm.named('down');
+  function k(over) { return pm.layer(pm.named('stand'), over, 1, 1, 1, 1); }
+  return [
+    [0.0, D],
+    [0.22, k({ 'hip.rx': -70, 'hip.rz': 35, 'spine.rx': 25, 'spine.rz': 10, 'head.rx': 15, 'armA.sx': -35, 'armA.sz': 45, 'armA.e': 15, 'armB.sx': 40, 'armB.sz': 10, 'armB.e': 70, 'legA.hx': 55, 'legA.k': 95, 'legB.hx': 30, 'legB.k': 60 })],
+    [0.45, k({ 'hip.rx': -35, 'hip.rz': 15, 'spine.rx': 45, 'head.rx': 20, 'armA.sx': -10, 'armA.sz': 30, 'armA.e': 5, 'armB.sx': 30, 'armB.e': 60, 'legA.hx': 85, 'legA.k': 110, 'legB.hx': -5, 'legB.k': 115 })],
+    [0.68, k({ 'hip.rx': -5, 'spine.rx': 38, 'head.rx': 15, 'armA.sx': 45, 'armA.sz': 12, 'armA.e': 55, 'armB.sx': 10, 'armB.e': 30, 'legA.hx': 75, 'legA.k': 90, 'legB.hx': -15, 'legB.k': 105 })],
+    [0.86, k({ 'spine.rx': 18, 'head.rx': 8, 'armA.sx': 15, 'armA.e': 35, 'armB.sx': 10, 'armB.e': 35, 'legA.hx': 25, 'legA.k': 30, 'legB.hx': 5, 'legB.k': 25 })],
+    [1.0, base]
+  ];
+}
+
+var herorig = require('./herorig');
+var posemath = require('./posemath');
+var moveplayer = require('./moveplayer');
+var moves = require('../data/moves');
+var enemies = require('../data/enemies');
+
+/* how a man's body answers each kind of blow: head and torso snap the way the blow sends them (degrees, metres) */
+var REACT = {
+  jab: { 'head.rx': -16, 'neck.rx': -6, 'spine.rx': -8 }, cross: { 'head.rx': -20, 'head.ry': -16, 'spine.rx': -10, 'spine.ry': -12 },
+  elbow: { 'head.ry': -36, 'spine.ry': -18, 'spine.rz': 8, 'head.rz': 8 },
+  hookB: { 'head.ry': 52, 'neck.ry': 22, 'spine.rz': -12, 'spine.ry': 16 }, hook: { 'head.ry': -52, 'neck.ry': -22, 'spine.rz': 12, 'spine.ry': -16 },
+  uppercut: { 'head.rx': -40, 'neck.rx': -20, 'spine.rx': -22, 'hip.y': 0.04 }, axeKick: { 'head.rx': 34, 'neck.rx': 22, 'spine.rx': 36, 'hip.y': -0.15 },
+  knee: { 'spine.rx': 46, 'hip.rx': 22, 'head.rx': 22, 'hip.y': -0.08 }, roundhouse: { 'head.ry': 66, 'spine.rz': 16, 'spine.ry': 24, 'hip.ry': 18 },
+  kick: { 'spine.rx': -26, 'hip.z': -0.08, 'head.rx': -14 }, counterCross: { 'head.rx': -24, 'head.ry': 24, 'spine.rx': -16 },
+  counter: { 'spine.rx': -32, 'head.rx': -30, 'hip.y': -0.1 }
+};
+/* an enemy's guard: elbows tucked in, forearms up and slightly crossed in front of the chest, a narrow compact shape */
+var GUARD_CHEST = { 'hip.y': -0.05, 'hip.ry': -20, 'spine.rx': 8, 'head.rx': 8, 'armA.sx': 24, 'armA.sz': 0, 'armA.e': 120, 'armA.pr': -28, 'armA.sy': -28,
+  'armB.sx': 26, 'armB.sz': 4, 'armB.e': 116, 'armB.pr': 28, 'armB.sy': 14, 'legA.hx': 20, 'legA.k': 24, 'legB.hx': -12, 'legB.k': 24, 'legB.hz': 10, 'legA.hz': 8 };
+/* bent over and dazed: weight forward, chest low, knees soft, head up enough to show the face */
+var DAZED = { 'spine.rx': 22, 'hip.rx': 10, 'head.rx': -24, 'hip.y': -0.12, 'legA.k': 14, 'legB.k': 14, 'legA.hx': 10, 'legB.hx': -8 };
+function addTo(out, add, k) { for (var n in add) out[n] = (out[n] || 0) + add[n] * k; }
+
+function createEnemyView(scene) {
+  var views = {}, TPS = 60;
+  var spikeGeo = new THREE.BoxGeometry(0.018, 0.018, 0.2), clubGeo = new THREE.BoxGeometry(0.07, 0.8, 0.07), clubMat = new THREE.MeshLambertMaterial({ color: 0x6b4423 });
+    var shadowGeo = new THREE.CircleGeometry(0.5, 20), shadowMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.28, depthWrite: false });
+  /* each kind of fighter carries his own gear on the rig: the chain, the heavy's bulk and belly, the kicker's headband, the blocker's
+     wrapped forearms, the thrower's bottle */
+  var gearMat = new THREE.MeshLambertMaterial({ color: 0xffffff, vertexColors: false }), M3 = {};
+  function mat(hex) { return M3[hex] || (M3[hex] = new THREE.MeshLambertMaterial({ color: hex })); }
+  function box(parent, w, h, d, x, y, z, hex) { var m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat(hex)); m.position.set(x, y, z); parent.add(m); return m; }
+  var bottleGeo = new THREE.BoxGeometry(0.07, 0.24, 0.07), bottleMat = new THREE.MeshLambertMaterial({ color: 0x2f8a3a, transparent: true, opacity: 0.9 });
+  function gear(kind, rig) {
+    var P = rig.parts, k;
+    if (kind === 'chain') { for (k = 0; k < 9; k++) box(P.R.wrist, 0.05, 0.075, 0.03 + (k % 2) * 0.03, 0, -0.1 - k * 0.075, 0.06 + Math.sin(k * 0.8) * 0.03, 0x9aa4ab); box(P.R.wrist, 0.09, 0.09, 0.09, 0, -0.1 - 9 * 0.075, 0.08, 0x6b747d); rig.root.scale.setScalar(1.04); }
+    if (kind === 'heavy') { rig.root.scale.set(1.3, 1.16, 1.3); box(rig.spine, 0.34, 0.26, 0.16, 0, 0.12, 0.13, 0x9a6440); box(rig.spine, 0.36, 0.06, 0.2, 0, -0.01, 0.1, 0x3a2414); }
+    if (kind === 'kicker') { box(rig.head, 0.27, 0.05, 0.27, 0, 0.1, 0, 0xffc21a); box(rig.head, 0.04, 0.12, 0.03, 0.05, 0.04, -0.15, 0xffc21a); }
+    if (kind === 'blocker') { ['L', 'R'].forEach(function (S) { box(P[S].elbow, 0.12, 0.2, 0.12, 0, -0.14, 0, 0xf2f2ee); box(P[S].wrist, 0.13, 0.1, 0.13, 0, -0.03, 0, 0xc8202a); }); box(rig.head, 0.28, 0.12, 0.28, 0, 0.12, 0, 0x2a4a8c); rig.root.scale.setScalar(1.05); }
+    if (kind === 'thrower') { box(P.R.wrist, 0.07, 0.22, 0.07, 0, -0.12, 0.05, 0x2f8a3a); box(rig.head, 0.26, 0.06, 0.26, 0, 0.12, 0.02, 0x5a7a2a); rig.root.scale.setScalar(0.97); }
+  }
+  function make(e) {
+    var rig = herorig.createHeroRig(e.kind === 'thug' ? 'thug' : 'thug:' + e.kind), mark = new THREE.Group(), spikes = [], i;
+    for (i = 0; i < 9; i++) {                                                  /* spikes fanned over the head, longer ones in the middle */
+      var ang = (i - 4) * 0.36, piv = new THREE.Group(), sp = new THREE.Mesh(spikeGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 1, depthTest: false }));
+      sp.renderOrder = 12; sp.rotation.x = Math.PI / 2; sp.position.y = 0.2; sp.scale.set(1, 1, 1 - Math.abs(i - 4) * 0.12);
+      piv.rotation.z = -ang; piv.add(sp); mark.add(piv); spikes.push(sp);
+    }
+    mark.position.y = 2.1; mark.visible = false; rig.root.add(mark);
+    var sh = new THREE.Mesh(shadowGeo, shadowMat); sh.rotation.x = -Math.PI / 2; sh.position.y = 0.02; rig.root.add(sh);
+    if (e.kind === 'stick') { var club = new THREE.Mesh(clubGeo, clubMat); club.position.set(0, -0.12, 0.1); rig.parts.R.wrist.add(club); rig.root.scale.setScalar(1.08); }
+    var bottle = null;
+    gear(e.kind, rig);
+    if (e.kind === 'thrower') { bottle = new THREE.Mesh(bottleGeo, bottleMat); scene.add(bottle); bottle.visible = false; }
+    scene.add(rig.root);
+    return { rig: rig, mark: mark, spikes: spikes, shadow: sh, cur: posemath.named('stand'), face: e.face, t: Math.random() * 6, sink: 0, bottle: bottle };
+  }
+  function pose(e, v, dt) {
+    var K = enemies.KINDS[e.kind], mv = moves.MOVES[K.clip], base;
+    if (e.st === 'approach') base = e.moving ? posemath.walkPose(e.phase * 0.9, 0.9) : posemath.layer(posemath.idlePose(v.t), posemath.named('guard'), 0.3, 1, 1, 1);
+    else base = posemath.layer(posemath.idlePose(v.t), posemath.named('guard'), 0.4, 1, 1, 1);
+    var out = base;
+    if (e.guarding) {
+      /* arms up; each blow he soaks makes it worse: the first jolts him and sags the guard, the second nearly folds it */
+      out = posemath.layer(base, GUARD_CHEST, 0.6, 1, 1, 1);
+      var gh = e.guardHits || 0, jolt = Math.exp(-Math.max(0, e.blockT) / 16) * (e.blockT < 70 ? 1 : 0);
+      /* each blow he soaks folds him further forward over his arms: shoulders hunch, knees give, head tucks down, arms pulled in at the belly */
+      addTo(out, { 'spine.rx': 20 + 8 * gh, 'hip.rx': 10 + 4 * gh, 'head.rx': 2, 'hip.y': -0.09, 'legA.k': 10, 'legB.k': 10, 'armA.sx': -16, 'armB.sx': -16, 'armA.e': 12, 'armB.e': 12 }, jolt);
+      addTo(out, { 'spine.rx': 14, 'hip.rx': 8, 'hip.y': -0.06, 'armA.sx': -14, 'armB.sx': -14, 'armA.e': 10, 'armB.e': 10 }, gh * 1.0);      /* he stays bent over his guard until he steadies */
+    }
+    if (e.st === 'windup' || e.st === 'strike' || e.st === 'recover') {
+      var u = e.st === 'windup' ? Math.min(1, e.t / (K.windup * TPS)) : 1;
+      var ct = e.st === 'windup' ? u * mv.hit * 0.95 : mv.hit * 0.95 + Math.min(1, (e.st === 'strike' ? e.t : 8 + e.t) / 30) * (mv.len - mv.hit * 0.95);
+      /* anticipation: lean back before the swing */
+      var clip = moveplayer.clipPose(K.clip, ct), w = e.st === 'recover' ? Math.max(0, 1 - e.t / (K.recover * TPS * 0.6)) : 1;
+      out = posemath.layer(base, clip, w, w, w, w);
+      if (e.st === 'windup') { out['spine.rx'] = (out['spine.rx'] || 0) - 10 * u; }
+    } else if (e.st === 'guardbreak') {
+      /* the guard is smashed open: arms flung wide, head and chest thrown back, a stagger on the spot */
+      var gb = Math.min(1, e.t / 5) * (v.held ? 1 : 1 - Math.max(0, (e.t - 40) / 15)); out = posemath.copy(base);
+      addTo(out, DAZED, gb); addTo(out, { 'armA.sx': -26, 'armB.sx': -26, 'armA.sz': 24, 'armB.sz': 24, 'armA.e': -10, 'armB.e': -10, 'spine.rx': 12, 'hip.rx': 8 }, gb);      /* guard smashed down: folded forward, arms hanging, face exposed */
+    } else if (e.st === 'hurt') {
+      /* per-blow reaction: snaps in fast, eases back; the body twists the way that blow sends it */
+      var jt = e.t < 4 ? e.t / 4 : Math.exp(-(e.t - 4) / 13); out = posemath.copy(base);
+      if (v.daze > 0.01) addTo(out, DAZED, v.daze); addTo(out, REACT[e.lastMove] || REACT.jab, jt * 1.35); addTo(out, { 'armA.sx': -20, 'armB.sx': -14, 'armA.sz': 14, 'armB.sz': 12, 'hip.y': -0.03 }, jt);
+    } else if (e.st === 'down' || e.st === 'dead') {
+      var dw = Math.min(1, e.t / 12); out = posemath.layer(base, posemath.named('down'), dw, dw, dw, dw);
+    } else if (e.st === 'awe') {
+      /* frightened by the spark from the sky: they flinch and cower, shield their faces or clutch their heads, trembling, backing away */
+      var aw = Math.min(1, e.t / 8), kind2 = e.id % 3, shake = Math.sin(v.t * 38 + e.id) * 4 * aw, fright;
+      if (kind2 === 0) fright = { 'armA.sx': 150, 'armB.sx': 150, 'armA.sz': 25, 'armB.sz': 25, 'armA.e': 125, 'armB.e': 125, 'spine.rx': 30, 'head.rx': 25, 'legA.hx': 35, 'legA.k': 60, 'legB.hx': 20, 'legB.k': 55 };   /* hands on his head, ducking */
+      else if (kind2 === 1) fright = { 'armA.sx': 95, 'armB.sx': 80, 'armA.sz': -5, 'armB.sz': 5, 'armA.e': 110, 'armB.e': 120, 'spine.rx': -16, 'head.rx': 18, 'head.ry': 30, 'legB.hx': -18 };                     /* arms across his face, turning away */
+      else fright = { 'armA.sx': 60, 'armB.sx': 55, 'armA.sz': 45, 'armB.sz': 50, 'armA.e': 25, 'armB.e': 30, 'spine.rx': -22, 'head.rx': -22, 'legA.hx': 15, 'legB.hx': -25, 'legB.k': 30 };              /* thrown back, hands up, staring */
+      fright['spine.rz'] = (fright['spine.rz'] || 0) + shake; fright['head.rz'] = shake * 0.8;
+      out = posemath.layer(base, fright, aw, aw, aw, aw);
+    } else if (e.st === 'getup') {
+      /* a real get-up: roll onto his side, push up on one hand, up to one knee, rise, shake his head, guard back up */
+      var gu = Math.min(1, e.t / 72); out = posemath.keyed(getupKeys(base), gu);
+      if (gu > 0.72) { var sh = (gu - 0.72) / 0.28; out['head.ry'] = (out['head.ry'] || 0) + Math.sin(sh * Math.PI * 4) * 22 * (1 - sh); out['neck.ry'] = (out['neck.ry'] || 0) + Math.sin(sh * Math.PI * 4) * 8 * (1 - sh); }
+    }
+    posemath.approach(v.cur, out, 22, dt);
+    return v.cur;
+  }
+  return {
+    sync: function (list, alpha, dt, target, seqId) {
+      var seen = {};
+      for (var i = 0; i < list.length; i++) {
+        var e = list[i], v = views[e.id] || (views[e.id] = make(e)); seen[e.id] = 1; v.t += dt;
+        var x = e.px + (e.x - e.px) * alpha, z = e.pz + (e.z - e.pz) * alpha;
+        var dy = Math.atan2(Math.sin(e.face - v.face), Math.cos(e.face - v.face)); v.face += dy * (1 - Math.exp(-14 * dt));
+        var lying = e.st === 'down' || e.st === 'dead';
+        v.held = seqId === e.id && (e.st === 'hurt' || e.st === 'guardbreak');
+        v.daze = (v.daze || 0) + ((v.held ? 1 : 0) - (v.daze || 0)) * (1 - Math.exp(-9 * dt));
+        v.sx = (v.sx || 0) * Math.exp(-dt * 8); v.sz = (v.sz || 0) * Math.exp(-dt * 8);          /* shoved by the blow, springs back to where he stood */
+        v.rig.root.position.set(x + v.sx, 0, z + v.sz); v.rig.root.rotation.y = v.face;
+        v.rig.applyPose(pose(e, v, dt), { plant: true }); v.rig.flutter(v.t, 0);
+        /* thrown by the last blow: he leaves the ground for a moment before he lands */
+        if (e.thrown && e.st === 'down' && e.t < 22) v.rig.root.position.y = Math.sin(Math.PI * Math.min(1, e.t / 22)) * 0.55;
+        /* face: eyes squeezed shut while he is reeling or out, mouth open and bloody once hit, blood smeared from the second blow on */
+        var fx = v.rig.faceFx;
+        if (fx) {
+          var hurtish = e.st === 'hurt' || e.st === 'guardbreak' || e.st === 'down' || e.st === 'dead' || seqId === e.id;
+          var open = hurtish && (e.hitN || 0) >= 1, vis = hurtish ? 1 : 0, k;
+          for (k = 0; k < fx.lids.length; k++) fx.lids[k].visible = !!vis;
+          fx.mouth.visible = open; fx.blood.visible = (e.hitN || 0) >= 2;
+        }
+        if (e.st === 'dead' && e.t > 55) { v.sink = Math.min(1, (e.t - 55) / 45); v.rig.root.position.y = -v.sink * 0.9; }
+        /* the thrower's bottle flies from his hand to where Toofan stood as the throw lands */
+        if (v.bottle) {
+          var flying = e.st === 'strike' || (e.st === 'recover' && e.t < 10);
+          if (e.st === 'windup') { var reach = e.aimD || 5; v.from = { x: x, z: z }; v.to = { x: x + Math.sin(e.face) * reach, z: z + Math.cos(e.face) * reach }; }
+          v.bottle.visible = flying && !!v.from;
+          if (v.bottle.visible) { var uu = Math.min(1, (e.st === 'strike' ? e.t : 8 + e.t) / 12); v.bottle.position.set(v.from.x + (v.to.x - v.from.x) * uu, 1.5 + Math.sin(Math.PI * uu) * 1.2 - uu * 0.4, v.from.z + (v.to.z - v.from.z) * uu); v.bottle.rotation.x += 0.5; v.bottle.rotation.z += 0.3; }
+        }
+        /* telegraph */
+        var m = v.mark, K = enemies.KINDS[e.kind];
+        if (e.st === 'windup') {
+          var u = e.t / (K.windup * TPS), flare = e.t < 8 ? 1.9 - e.t * 0.1 : 1, pulse = 1 + Math.sin(v.t * (14 + u * 22)) * 0.12;
+          m.visible = true; m.scale.setScalar(flare * pulse * (K.blockable ? 1.3 : 1.8)); m.position.y = 2.05 + (K.blockable ? 0 : 0.08);
+          var col = K.blockable ? 0xffffff : 0xff2a1a; for (var si = 0; si < v.spikes.length; si++) { v.spikes[si].material.color.setHex(col); v.spikes[si].material.opacity = u < 0.15 ? u / 0.15 : 1; }
+        } else m.visible = false;
+        v.shadow.visible = !lying || e.t < 60;
+      }
+      for (var id in views) if (!seen[id]) { scene.remove(views[id].rig.root); if (views[id].bottle) scene.remove(views[id].bottle); delete views[id]; }
+    },
+    /* world position of his mouth and eyes, and the way his face is pointing (for spit, blood and the close-up camera) */
+    /* the blow drives his whole body along its direction, then he settles back */
+    shove: function (id, dx, dz, amt) { var v = views[id]; if (v) { v.sx = (v.sx || 0) + dx * amt; v.sz = (v.sz || 0) + dz * amt; } },
+    facePoint: function (id) {
+      var v = views[id], fx = v && v.rig.faceFx; if (!fx) return null;
+      v.rig.root.updateMatrixWorld(true);
+      var m = v.rig.head.localToWorld(new THREE.Vector3(fx.mouthPt[0], fx.mouthPt[1], fx.mouthPt[2])), q = v.rig.head.localToWorld(new THREE.Vector3(fx.eyePt[0], fx.eyePt[1], fx.eyePt[2]));
+      var f = v.rig.head.localToWorld(new THREE.Vector3(fx.eyePt[0], fx.eyePt[1], fx.eyePt[2] + 0.1)); f.sub(q).normalize();
+      return { fdx: f.x, fdy: f.y, fdz: f.z, mx: m.x, my: m.y, mz: m.z, ex: q.x, ey: q.y, ez: q.z, face: v.face };
+    },
+    count: function () { return Object.keys(views).length; },
+    dispose: function () { for (var id in views) { scene.remove(views[id].rig.root); if (views[id].bottle) scene.remove(views[id].bottle); } views = {}; }
+  };
+}
+
+module.exports = { createEnemyView: createEnemyView };

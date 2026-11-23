@@ -1,0 +1,334 @@
+/* view: road fights in ride mode. Goons on their own dark street bikes riding one lane to Toofan's left, the gang car whose crew lean out
+   of the windows while Toofan clings flat to its roof (Spider-Man style), the police scene with constables and handcuffed goons walked to
+   the police car, and warning flashes before blows. Reads the encounter sim only. */
+'use strict';
+
+var R = require('../data/ride');
+var vg = require('./voxgrid');
+var herorig = require('./herorig');
+var posemath = require('./posemath');
+var moveplayer = require('./moveplayer');
+var rockstand = require('./rockstand');
+
+var ridevox = require('./ridevox');
+var ROOF_Y = 1.42, HALF_W = 0.9;                    /* the gang car's roof height and half width, before scaling (from its model) */
+var GVS = 0.075;
+var h = vg.hex;
+
+/* ---- the goons' bike: a dark street bike with a red tank, chrome bars and exhaust, separate wheels so they turn ---- */
+var tpl = null;
+function geoOf(g, pivot) {
+  var a = vg.meshGrid(g, pivot, GVS, { jitter: 0.05, seed: 77 }), bg = new THREE.BufferGeometry();
+  bg.setAttribute('position', new THREE.BufferAttribute(a.positions, 3)); bg.setAttribute('normal', new THREE.BufferAttribute(a.normals, 3));
+  bg.setAttribute('color', new THREE.BufferAttribute(a.colors, 3)); bg.setIndex(new THREE.BufferAttribute(a.indices, 1)); bg.computeBoundingSphere();
+  return bg;
+}
+function template() {
+  if (tpl) return tpl;
+  var dark = h('#25272c'), eng = h('#6b7078'), chrome = h('#c7ced4'), red = h('#b3221c'), redL = h('#d0352a'), blk = h('#141518'), seat = h('#3a2418'), lamp = h('#fff3c4'), tail = h('#e0302a');
+  var g = vg.createGrid(11, 16, 32);
+  vg.box(g, 5, 6, 8, 5, 7, 23, dark); vg.box(g, 5, 4, 19, 5, 9, 21, dark);                       /* frame */
+  vg.box(g, 3, 3, 12, 7, 7, 17, eng); vg.box(g, 3, 8, 13, 7, 8, 16, chrome);                      /* engine and fins */
+  vg.box(g, 3, 9, 15, 7, 11, 21, red); vg.box(g, 4, 12, 16, 6, 12, 20, redL); vg.box(g, 3, 10, 15, 7, 10, 21, blk);   /* tank with a black stripe */
+  vg.box(g, 3, 9, 7, 7, 10, 14, seat); vg.box(g, 4, 8, 3, 6, 9, 7, dark);                         /* seat, rear mudguard */
+  vg.box(g, 3, 5, 24, 3, 12, 25, chrome); vg.box(g, 7, 5, 24, 7, 12, 25, chrome);                 /* fork legs */
+  vg.box(g, 0, 13, 22, 10, 13, 22, chrome); vg.box(g, 0, 13, 22, 1, 13, 22, blk); vg.box(g, 9, 13, 22, 10, 13, 22, blk);   /* bars and grips */
+  vg.box(g, 4, 10, 26, 6, 12, 26, lamp); vg.box(g, 3, 10, 25, 7, 12, 25, chrome);                 /* headlight */
+  vg.box(g, 4, 9, 2, 6, 9, 2, tail); vg.box(g, 8, 3, 3, 8, 4, 15, chrome);                       /* tail light, exhaust */
+  var w = vg.createGrid(3, 11, 11), y, z;
+  for (y = 0; y < 11; y++) for (z = 0; z < 11; z++) { var d = Math.hypot(y - 5, z - 5); if (d <= 5.4) vg.box(w, 0, y, z, 2, y, z, d > 3.6 ? h('#1b1c1f') : (d > 1.4 ? h('#8a929a') : chrome)); }
+  tpl = { body: geoOf(g, { x: 5.5, y: 0, z: 16 }), wheel: geoOf(w, { x: 1.5, y: 5.5, z: 5.5 }), seat: { y: 11 * GVS, z: (11 - 16) * GVS }, wheelR: 5.5 * GVS,
+          rearZ: (6 - 16) * GVS + GVS / 2, frontZ: (26 - 16) * GVS + GVS / 2, axleY: 5.5 * GVS };
+  return tpl;
+}
+
+function makeMark(color) {                            /* the warning flash: a burst of thin rays over the head, like the brawler's */
+  var g = new THREE.Group(), geo = new THREE.BoxGeometry(0.03, 0.03, 0.36), mat = new THREE.MeshBasicMaterial({ color: color, transparent: true, depthTest: false });
+  for (var i = 0; i < 9; i++) { var piv = new THREE.Group(), m = new THREE.Mesh(geo, mat); m.rotation.x = Math.PI / 2; m.position.y = 0.3; m.scale.z = 1 - Math.abs(i - 4) * 0.12; m.renderOrder = 12; piv.rotation.z = -(i - 4) * 0.36; piv.add(m); g.add(piv); }
+  g.visible = false; g.userData.mat = mat; return g;
+}
+
+/* poses for the new scenes */
+var CUFFED = { 'armA.sx': -38, 'armB.sx': -38, 'armA.sz': 8, 'armB.sz': 8, 'armA.e': 85, 'armB.e': 85, 'armA.pr': 50, 'armB.pr': 50, 'head.rx': 20, 'spine.rx': 10, 'neck.rx': 6 };
+/* flat on the roof, Spider-Man style: arms flung wide and forward, elbows bent, gripping both edges; head up. His body lies on the roof
+   tipped forward from the feet, so the legs bend down to it: thighs angled down to the roof, knees on it, shins lying flat along it
+   (hips flexed, knees bent back by as much), splayed wide */
+var CLING = { 'armA.sx': 105, 'armB.sx': 105, 'armA.sz': 72, 'armB.sz': 72, 'armA.e': 55, 'armB.e': 55, 'armA.pr': -30, 'armB.pr': -30, 'head.rx': -62, 'neck.rx': -24, 'spine.rx': -8,
+              'legA.hx': 52, 'legB.hx': 52, 'legA.hz': 30, 'legB.hz': 30, 'legA.k': 60, 'legB.k': 60, 'legA.a': -30, 'legB.a': -30, 'hip.y': 0 };
+var LEAN_OUT = { 'spine.rx': -32, 'hip.rx': -14, 'legA.hx': 70, 'legB.hx': 70, 'legA.k': 90, 'legB.k': 90, 'hip.y': -0.45, 'armA.sx': 40, 'armB.sx': 20, 'armA.e': 60, 'armB.e': 70 };
+var SALUTE = { 'armB.sx': 150, 'armB.sz': 30, 'armB.e': 120, 'armB.pr': 30 };
+
+/* the goons' bandana: a cloth band tied round the forehead, a knot at the back and two tails hanging from it (one mesh) */
+function bandanaGeo() {
+  var parts = [[0, 0.11, 0.14, 0.29, 0.07, 0.025], [0, 0.11, -0.14, 0.29, 0.07, 0.025], [0.14, 0.11, 0, 0.025, 0.07, 0.29], [-0.14, 0.11, 0, 0.025, 0.07, 0.29],
+               [0, 0.12, -0.165, 0.07, 0.07, 0.05], [0.03, 0.03, -0.17, 0.045, 0.13, 0.02], [-0.035, 0.0, -0.18, 0.045, 0.16, 0.02],
+               [0, 0.16, 0.0, 0.25, 0.03, 0.25]];
+  var pos = [], idx = [], nor = [];
+  parts.forEach(function (q) {
+    var g = new THREE.BoxGeometry(q[3], q[4], q[5]); g.translate(q[0], q[1], q[2]);
+    var b = pos.length / 3, P = g.attributes.position.array, N = g.attributes.normal.array, I = g.index.array, i;
+    for (i = 0; i < P.length; i++) { pos.push(P[i]); nor.push(N[i]); }
+    for (i = 0; i < I.length; i++) idx.push(I[i] + b);
+    g.dispose();
+  });
+  var out = new THREE.BufferGeometry(); out.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); out.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3)); out.setIndex(idx);
+  return out;
+}
+
+function createEncView(root, heroRig, heroBike, blobUnder) {
+  var S = R.SCALE, foes = {}, crew = {}, car = null, police = null, cops = [], cuffed = {}, ridePose = posemath.named('ride'), guard = posemath.named('guard');
+  var clubGeo = new THREE.BoxGeometry(0.07, 0.8, 0.07), clubMat = new THREE.MeshLambertMaterial({ color: 0x6b4423 });
+  var bandGeo = bandanaGeo(), bandMat = new THREE.MeshLambertMaterial({ color: 0xc8202a });
+  var goonMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+  var seatV = new THREE.Vector3(), walkT = 0;
+  /* aiming a limb: point an arm or leg (which hangs along -y from its joint) straight at a world point, blended over the posed rotation */
+  var aimV = new THREE.Vector3(), aimS = new THREE.Vector3(), aimQ = new THREE.Quaternion(), aimP = new THREE.Quaternion(), DOWN = new THREE.Vector3(0, -1, 0), I = new THREE.Quaternion();
+  function aim(rig, joint, mid, target, w, bend) {
+    if (w <= 0.001) return; if (w > 1) w = 1;
+    rig.root.updateMatrixWorld(true); joint.getWorldPosition(aimS);
+    aimV.copy(target).sub(aimS).normalize(); joint.parent.getWorldQuaternion(aimP); aimV.applyQuaternion(aimP.invert());
+    aimQ.setFromUnitVectors(DOWN, aimV); joint.quaternion.slerp(aimQ, w);
+    if (mid) { if (bend) mid.quaternion.slerp(aimQ.setFromAxisAngle(aimV.set(1, 0, 0), -bend), w); else mid.quaternion.slerp(I, w); }
+  }
+  function headOf(rig, out) { rig.root.updateMatrixWorld(true); return rig.head.getWorldPosition(out).add(aimV.set(0, 0.08, 0)); }
+  var tgtV = new THREE.Vector3(), heroHead = new THREE.Vector3();
+  var lightR = new THREE.MeshBasicMaterial({ color: 0xff2a2a }), lightB = new THREE.MeshBasicMaterial({ color: 0x2a6bff }), lightGeo = new THREE.BoxGeometry(0.35, 0.14, 0.2);
+
+  function seated(rig, bike) { bike.pitch.add(rig.root); rig.root.position.set(bike.seat.x, bike.seat.y + 0.08 - 0.85, bike.seat.z); rig.root.rotation.set(0, 0, 0); rig.root.scale.setScalar(1); }
+  function clip(name, sec) { return moveplayer.clipPose(name, sec); }
+  function place(obj, bx, bz, e, u, lat, y) { obj.position.set(bx + e.f.x * u + e.l.x * lat, y || 0, bz + e.f.z * u + e.l.z * lat); }
+  function heading(e) { return Math.atan2(e.f.x, e.f.z); }
+
+  function makeFoe(o) {
+    var T = template(), rootG = new THREE.Group(), lean = new THREE.Group(), body = new THREE.Mesh(T.body, goonMat), rig = herorig.createHeroRig('thug'), mark = makeMark(0xffffff);
+    rootG.scale.setScalar(S); rootG.add(lean); lean.add(body);
+    var rear = new THREE.Group(), front = new THREE.Group(); rear.position.set(0, T.axleY, T.rearZ); front.position.set(0, T.axleY, T.frontZ);
+    rear.add(new THREE.Mesh(T.wheel, goonMat)); front.add(new THREE.Mesh(T.wheel, goonMat)); lean.add(rear); lean.add(front);
+    lean.add(rig.root); rig.root.position.set(0, T.seat.y + 0.08 - 0.85, T.seat.z);
+    var band = new THREE.Mesh(bandGeo, bandMat); band.position.set(0, 0.04, 0); rig.head.add(band);       /* a red bandana, tied at the back */
+    rig.head.add(mark); mark.position.y = 0.55;
+    if (o.kind === 'rod') { var club = new THREE.Mesh(clubGeo, clubMat); club.position.set(0, -0.12, 0.1); (o.lat < 0 ? rig.parts.L : rig.parts.R).wrist.add(club); }   /* in the hand toward Toofan */
+    blobUnder(rootG, 0.9, 2.3); root.add(rootG);
+    return { root: rootG, lean: lean, rear: rear, front: front, rig: rig, mark: mark, wheel: 0 };
+  }
+  function makeMan(variant) { var rig = herorig.createHeroRig(variant), mark = makeMark(0xffffff); rig.root.scale.setScalar(S); rig.head.add(mark); mark.position.y = 0.55; root.add(rig.root); return { rig: rig, mark: mark }; }
+  function makeCar(look, lights) {
+    var m = new THREE.Mesh(ridevox.modelGeometry(lights ? 'police' : 'gang', 0), goonMat); m.scale.setScalar(S); blobUnder(m, 2.2, 4.6); root.add(m);
+    var mark = makeMark(0xff3a2a); mark.position.y = ROOF_Y + 0.9; m.add(mark); mark.userData.base = 2.2 / S;
+    var bar = null;
+    if (lights) { bar = [new THREE.Mesh(lightGeo, lightR), new THREE.Mesh(lightGeo, lightB)]; bar[0].position.set(-0.2, ROOF_Y + 0.07, 0); bar[1].position.set(0.2, ROOF_Y + 0.07, 0); m.add(bar[0]); m.add(bar[1]); }
+    return { m: m, mark: mark, bar: bar };
+  }
+  function pulse(mark, t, on, u) { mark.visible = on; if (on) { var p = (1 + Math.sin(t * (14 + u * 22)) * 0.12) * (u < 0.2 ? 1.6 - u * 3 : 1); mark.scale.setScalar(p * (mark.userData.base || 1)); mark.userData.mat.opacity = Math.min(1, u * 6); } }
+  /* impact bursts: a star of rays and a flash ball that grow and fade where a blow lands */
+  var bursts = [], rayGeo = new THREE.BoxGeometry(0.05, 0.05, 1), ballGeo = new THREE.SphereGeometry(0.35, 10, 8);
+  function burst(x, y, z, color, size) {
+    var g = new THREE.Group(), mat = new THREE.MeshBasicMaterial({ color: color, transparent: true, depthTest: false, blending: THREE.AdditiveBlending }), i;
+    for (i = 0; i < 14; i++) { var m = new THREE.Mesh(rayGeo, mat); var a = i * 2.4, b2 = Math.sin(i * 1.7) * 1.2; m.rotation.set(b2, a, 0); m.position.set(0, 0, 0); m.renderOrder = 20; var piv = new THREE.Group(); piv.add(m); m.position.z = 0.5; piv.rotation.set(b2, a, 0); m.rotation.set(0, 0, 0); g.add(piv); }
+    var ball = new THREE.Mesh(ballGeo, mat); ball.renderOrder = 20; g.add(ball);
+    g.position.set(x, y, z); root.add(g); bursts.push({ g: g, mat: mat, t: 0, size: size || 1 });
+  }
+  function stepBursts(dt) {
+    bursts = bursts.filter(function (b) {
+      b.t += dt; var u = b.t / 0.42; if (u >= 1) { root.remove(b.g); b.mat.dispose(); return false; }
+      b.g.scale.setScalar(b.size * (0.3 + u * 1.6)); b.mat.opacity = 1 - u; return true;
+    });
+  }
+  function clearAll() {
+    Object.keys(foes).forEach(function (k) { root.remove(foes[k].root); }); foes = {};
+    Object.keys(crew).forEach(function (k) { root.remove(crew[k].rig.root); }); crew = {};
+    Object.keys(cuffed).forEach(function (k) { root.remove(cuffed[k].rig.root); }); cuffed = {};
+    cops.forEach(function (c) { root.remove(c.rig.root); }); cops = [];
+    if (car) { root.remove(car.m); car = null; } if (police) { root.remove(police.m); police = null; }
+  }
+
+  /* gang patrols cruising the roads before any fight: a pair of bike goons riding side by side, or the gang car, with a red mark over
+     them so they read as a fight he can choose */
+  var pat = {}, patV = new THREE.Vector3();
+  function makePatrol(p) {
+    var P = { kind: p.kind, wheel: 0 };
+    if (p.kind === 'car') { P.car = makeCar(0, false); P.car.mark.userData.base = 1.6 / S; }
+    else { P.foes = [makeFoe({ kind: 'fist', lat: -1 }), makeFoe({ kind: 'rod', lat: 1 })]; }
+    return P;
+  }
+  function dropPatrol(P) { if (P.car) root.remove(P.car.m); if (P.foes) P.foes.forEach(function (F) { root.remove(F.root); }); }
+  function syncPatrols(list, alpha, dt, t, bx, bz) {
+    var seen = {}, i;
+    for (i = 0; i < list.length; i++) {
+      var p = list[i]; if (Math.abs(p.x - bx) > R.VIEW_R || Math.abs(p.z - bz) > R.VIEW_R) continue;
+      seen[p.id] = 1; var P = pat[p.id] || (pat[p.id] = makePatrol(p));
+      var x = p.px + (p.x - p.px) * alpha, z = p.pz + (p.z - p.pz) * alpha, h = p.ph + Math.atan2(Math.sin(p.h - p.ph), Math.cos(p.h - p.ph)) * alpha;
+      var lx = Math.cos(h), lz = -Math.sin(h), fx = Math.sin(h), fz = Math.cos(h);
+      if (P.car) { P.car.m.position.set(x, 0, z); P.car.m.rotation.y = h; pulse(P.car.mark, t, true, 1); }
+      else {
+        P.wheel += 7.5 * dt / (template().wheelR * S);
+        P.foes.forEach(function (F, k) {
+          var side = k ? -0.9 : 0.9, back = k ? -1.4 : 0;
+          F.root.position.set(x + lx * side + fx * back, 0, z + lz * side + fz * back); F.root.rotation.y = h;
+          F.rear.rotation.x = F.wheel; F.front.rotation.x = F.wheel; F.rig.applyPose(ridePose, { plant: false });
+          pulse(F.mark, t, k === 0, 1);
+        });
+      }
+    }
+    Object.keys(pat).forEach(function (k) { if (!seen[k]) { dropPatrol(pat[k]); delete pat[k]; } });
+  }
+
+  return {
+    active: false,
+    patrols: syncPatrols,
+    /* the middle of the action, for the camera: {u, lat} along the road from the bike */
+    focus: function (r) {
+      var e = r.enc; if (!e) return null;
+      if (e.phase === 'police' && e.cuffed) { var su = 0, n = 0; e.cuffed.forEach(function (g) { if (!g.gone) { su += g.u; n++; } }); return { u: n ? su / n : e.police.u, lat: e.cuffed[0].lat - 1.5, police: true }; }
+      if (e.car && (e.hero.roof || e.hero.leap > 0)) return { u: e.car.u, lat: e.car.lat - e.car.sw, roof: true };
+      var a = null; (e.foes || []).forEach(function (o) { if (!a && o.st !== 'down' && o.st !== 'approach') a = o; });
+      if (a && a.lat !== undefined) return { u: 0.3, lat: 0, bikes: true };            /* goons on both sides: frame Toofan in the middle */
+      if (a) return { u: a.u * 0.5, lat: R.ENC.LAT * 0.5 };
+      if (e.car) return { u: e.car.u * 0.5, lat: R.ENC.LAT * 0.5 };
+      if (e.kind === 'bikes') return { u: 0.3, lat: 0, bikes: true };
+      return { u: 0, lat: R.ENC.LAT * 0.4 };
+    },
+    /* where an enemy is in the world (for close-ups) */
+    worldOf: function (r, id, bx, bz) {
+      var e = r.enc; if (!e) return null; var o = (e.foes || []).concat(e.crew || []).filter(function (q) { return q.id === id; })[0]; if (!o) return null;
+      var u = o.crew ? e.car.u + o.side * 1.05 : o.u, lat = o.crew ? e.car.lat : (o.lat !== undefined ? o.lat : R.ENC.LAT);
+      return { x: bx + e.f.x * u + e.l.x * lat, z: bz + e.f.z * u + e.l.z * lat };
+    },
+    burst: burst,
+    sync: function (r, alpha, dt, t, bx, bz) {
+      stepBursts(dt);
+      var e = r.enc;
+      if (!e) { if (this.active) { clearAll(); this.active = false; if (heroRig.root.parent !== heroBike.pitch) seated(heroRig, heroBike); heroRig.applyPose(ridePose, { plant: false }); heroRig.body.rotation.set(0, 0, 0); heroRig.root.rotation.set(0, 0, 0); } return false; }
+      this.active = true; walkT += dt;
+      var hd = heading(e), H = e.hero, E = R.ENC;
+
+      /* ---- bike goons ---- */
+      var seen = {};
+      (e.foes || []).forEach(function (o) {
+        seen[o.id] = 1; var F = foes[o.id] || (foes[o.id] = makeFoe(o)), T = template();
+        place(F.root, bx, bz, e, o.u, o.lat !== undefined ? o.lat : E.LAT); F.root.rotation.y = hd;
+        F.wheel += (r.bike.speed + (o.st === 'down' ? -7 : 0)) * dt / (T.wheelR * S); F.rear.rotation.x = F.wheel; F.front.rotation.x = F.wheel;
+        var pose = ridePose, down = o.st === 'down';
+        var hk = o.lat < 0 ? 'bkHookL' : 'bkHookR';                       /* he swings at Toofan, who is on his right if he rides on the left */
+        if (o.st === 'windup') pose = posemath.layer(ridePose, clip(hk, Math.min(1, o.t / E.WIND) * 0.19), 0, 1, 1, 1);
+        else if (o.st === 'recover') pose = posemath.layer(ridePose, clip(hk, 0.19 + Math.min(1, o.t / 26) * 0.35), 0, 1 - o.t / 26, 1 - o.t / 26, 1 - o.t / 26);
+        else if (o.st === 'hurt') pose = posemath.layer(ridePose, posemath.named('hurt'), 0, 0.6 * Math.max(0, 1 - o.t / 20), 0.6, 0.6);
+        else if (o.st === 'awe') {                                        /* frightened by the spark: leaning away, an arm up over his face */
+          var fw2 = Math.min(1, o.t / 8), sh2 = Math.sin(t * 38 + o.id) * 4;
+          pose = posemath.layer(ridePose, { 'spine.rx': -18, 'spine.rz': (o.lat > 0 ? 14 : -14) + sh2, 'head.rx': 15, 'head.ry': o.lat > 0 ? 30 : -30, 'armA.sx': 100, 'armA.e': 115, 'armA.sz': -5 }, 0, fw2, fw2, 0);
+        }
+        F.rig.applyPose(pose, { plant: false });
+        F.rig.body.rotation.z = o.st === 'hurt' ? 0.3 * Math.exp(-o.t / 10) : 0;
+        if (o.st === 'recover' && o.t < 14) {                               /* the blow lands: his fist (or rod) goes to Toofan's face */
+          var arm = o.lat > 0 ? F.rig.parts.R : F.rig.parts.L, wb = o.t < 4 ? 1 : 1 - (o.t - 4) / 10;
+          F.rig.body.rotation.z = (o.lat > 0 ? -1 : 1) * 0.18 * wb; aim(F.rig, arm.shoulder, arm.elbow, heroHead, wb, 0);
+        }
+        F.lean.rotation.z = down ? Math.min(1.35, o.t * 0.06) : (o.st === 'hurt' ? 0.15 : 0);
+        pulse(F.mark, t, o.st === 'windup', o.t / E.WIND);
+      });
+      Object.keys(foes).forEach(function (k) { if (!seen[k]) { root.remove(foes[k].root); delete foes[k]; } });
+
+      /* ---- the gang car and its crew leaning out of the near-side windows ---- */
+      if (e.car) {
+        var c = e.car; if (!car) car = makeCar(0, false);
+        place(car.m, bx, bz, e, c.u, c.lat - c.sw); car.m.rotation.y = hd + c.yaw + c.sw * 0.12;
+        pulse(car.mark, t, c.st === 'windup' && e.phase === 'fight', c.t / E.CAR_WIND);
+        e.crew.forEach(function (o) {
+          var C2 = crew[o.id] || (crew[o.id] = makeMan('thug'));
+          var rise = o.st === 'hidden' ? 0 : (o.st === 'pop' ? o.rise : 1), gone = o.st === 'out' && o.t > 60;
+          /* half out of the window on the camera side, facing up at the roof */
+          place(C2.rig.root, bx, bz, e, c.u + o.side * 0.85, c.lat - c.sw - HALF_W * S + 0.45 - rise * 0.2, 0.25 * S * rise - 1.2 * (1 - rise));      /* legs inside the car, chest out of the window */
+          C2.rig.root.rotation.y = hd + c.yaw + Math.PI / 2;
+          C2.rig.root.visible = o.st !== 'hidden' && !gone;
+          var pose = posemath.layer(guard, LEAN_OUT, 1, 1, 1, 1);
+          if (o.st === 'windup') pose = posemath.layer(pose, clip('hook', Math.min(1, o.t / E.WIND) * 0.2), 0, 1, 1, 1);
+          else if (o.st === 'recover') pose = posemath.layer(pose, clip('hook', 0.2 + Math.min(1, o.t / 26) * 0.4), 0, 1, 1, 1);
+          else if (o.st === 'hurt') pose = posemath.layer(pose, posemath.named('hurt'), 0, 1, 1, 1);
+          C2.rig.applyPose(pose, { plant: false });
+          C2.rig.body.rotation.x = o.st === 'out' ? -Math.min(1.5, o.t * 0.05) : -0.15;
+          if (o.st === 'out') { var k = Math.min(1, o.t / 40); C2.rig.root.position.x -= e.l.x * k * 2.4; C2.rig.root.position.z -= e.l.z * k * 2.4; C2.rig.root.position.y -= k * 0.4; }
+          pulse(C2.mark, t, o.st === 'windup', o.t / E.WIND);
+        });
+      }
+
+      /* ---- the police scene ---- */
+      if (e.police) {
+        if (!police) police = makeCar(1, true);
+        place(police.m, bx, bz, e, e.police.u, e.police.lat); police.m.rotation.y = hd;
+        var blink = Math.sin(t * 16) > 0; police.bar[0].visible = blink; police.bar[1].visible = !blink;
+        var arrived = e.police.u > e.police.stop - 0.5;
+        if (!cops.length) cops = e.cops.map(function () { return makeMan('cop'); });
+        e.cops.forEach(function (cp, i) {
+          var M = cops[i]; M.rig.root.visible = arrived; place(M.rig.root, bx, bz, e, cp.u, cp.lat + (i ? 0 : -0.6));
+          M.rig.root.rotation.y = hd + (i ? -Math.PI / 2 - 0.6 : -Math.PI / 2 + 0.6);
+          M.rig.applyPose(i ? posemath.idlePose(t) : posemath.layer(posemath.idlePose(t), SALUTE, 0, 1, 1, 1), { plant: true });
+        });
+        e.cuffed.forEach(function (g) {
+          var M = cuffed[g.id] || (cuffed[g.id] = makeMan('thug'));
+          M.rig.root.visible = !g.gone; place(M.rig.root, bx, bz, e, g.u, g.lat);
+          var walking = g.walk > 0 && !g.gone;
+          if (walking) { var tu = e.police.u + 1.2 - g.u, tl = e.police.lat + 1.3 - g.lat; M.rig.root.rotation.y = Math.atan2(e.f.x * tu + e.l.x * tl, e.f.z * tu + e.l.z * tl); }
+          else M.rig.root.rotation.y = hd + Math.PI / 2;           /* facing the road, heads down */
+          var base = walking ? posemath.walkPose(walkT * 6 + g.id, 0.7) : posemath.idlePose(t + g.id);
+          M.rig.applyPose(posemath.layer(base, CUFFED, 0, 1, 1, 1), { plant: true });
+        });
+      }
+
+      /* ---- Toofan ---- */
+      var rig = heroRig;
+      if (H.down || H.rise) {
+        /* thrown off Bijli onto the road beside her; after Maa's slaps he rises there in his rock stand, then jumps back on */
+        if (rig.root.parent !== root) { root.add(rig.root); rig.root.scale.setScalar(R.SCALE); }
+        var dt0 = e.t / 60, side = -1.7, fly = H.down ? Math.min(1, e.t / 30) : 1;
+        if (H.down) {
+          place(rig.root, bx, bz, e, -0.8 * fly, side * fly, Math.sin(Math.PI * fly) * 0.9 * (1 - fly * 0.3));
+          rig.root.rotation.set(0, hd + Math.PI / 2, 0); rig.applyPose(posemath.named('down'), { plant: true }); rig.body.rotation.set(0, 0, 0);
+        } else {
+          var rs = rockstand.at(dt0), remount = Math.max(0, (e.t - (R.ENC.RISE_AT || 260)) / 40);
+          place(rig.root, bx, bz, e, -0.8 * (1 - remount), side * (1 - remount), rs.lift + Math.sin(Math.PI * Math.min(1, remount)) * 0.8);
+          rig.root.rotation.set(0, hd + Math.PI / 2 * (1 - Math.min(1, remount)), 0); rig.applyPose(rs.pose, { plant: true }); rig.body.rotation.set(0, 0, 0);
+        }
+        headOf(rig, heroHead);
+      } else if (!H.roof && H.leap <= 0) {
+        if (rig.root.parent !== heroBike.pitch) seated(rig, heroBike);
+        rig.root.rotation.set(0, 0, 0);
+        var pose = ridePose;
+        if (H.act) pose = posemath.layer(ridePose, { 'head.ry': (H.act.side || 1) * 40, 'neck.ry': (H.act.side || 1) * 15 }, 0, 1, 1, 1);     /* look at him */
+        else if (H.guard) pose = posemath.layer(ridePose, posemath.named('block'), 0, 0, (H.side || 1) > 0 ? 1 : 0, (H.side || 1) > 0 ? 0 : 1);     /* elbow guard on the side of the threat */
+        if (H.hurt > 0) pose = posemath.layer(pose, posemath.named('hurt'), 0, 0.5, 0.5, 0.5);
+        rig.applyPose(pose, { plant: false });
+        rig.body.rotation.set(0, 0, H.hurt > 0 ? -0.25 * (H.hurt / 22) : 0);
+        if (H.act) {
+          /* strikes go out to the side, straight at the goon: fists and elbows at his face, boots at his chest */
+          var sd = H.act.side || 1, A = H.act, hitT = A.counter ? 6 : A.hitAt, w3 = A.t < hitT ? Math.pow(A.t / hitT, 1.6) : Math.max(0, 1 - (A.t - hitT - 3) / Math.max(4, A.len - hitT - 3));
+          var tgt = null, best = 1e9;
+          (e.foes || []).forEach(function (o) { if (o.st === 'down' || (o.lat > 0 ? 1 : -1) !== sd || !foes[o.id]) return; if (Math.abs(o.u) < best) { best = Math.abs(o.u); tgt = foes[o.id]; } });
+          var limb = sd > 0 ? rig.parts.L : rig.parts.R, kickM = /Kick/.test(A.move), elbowM = /Elbow/.test(A.move);
+          if (tgt) { tgt.rig.root.updateMatrixWorld(true); if (kickM) tgt.rig.spine.getWorldPosition(tgtV); else headOf(tgt.rig, tgtV); }
+          else { rig.root.updateMatrixWorld(true); rig.head.getWorldPosition(tgtV); tgtV.x += e.l.x * sd * 1.4; tgtV.z += e.l.z * sd * 1.4; }
+          rig.body.rotation.z = sd * (kickM ? -0.22 : 0.2) * w3;           /* lean into a punch, away for a kick */
+          if (kickM) aim(rig, limb.hip, limb.knee, tgtV, w3, 0);
+          else aim(rig, limb.shoulder, limb.elbow, tgtV, w3, elbowM ? 2.3 : (/Hook/.test(A.move) ? 0.55 : 0));
+        }
+        headOf(rig, heroHead);
+      } else {
+        /* the leap from Bijli onto the car, then flat on the roof gripping its edges, rising to strike at the men in the windows */
+        if (rig.root.parent !== root) { root.add(rig.root); rig.root.scale.setScalar(S); }
+        heroBike.root.updateMatrixWorld(true); seatV.set(heroBike.seat.x, heroBike.seat.y + 0.08 - 0.85, heroBike.seat.z); heroBike.pitch.localToWorld(seatV);
+        var c2 = e.car, rl = c2.lat - c2.sw, ru = c2.u - 0.95, rx = bx + e.f.x * ru + e.l.x * rl, ry = ROOF_Y * S + 0.42, rz = bz + e.f.z * ru + e.l.z * rl;
+        var k2 = H.roof && e.phase === 'roof' ? 1 : H.leap, s2 = k2 * k2 * (3 - 2 * k2);
+        rig.root.position.set(seatV.x + (rx - seatV.x) * s2, seatV.y + (ry - seatV.y) * s2 + Math.sin(Math.PI * k2) * 1.5 * (k2 < 1 ? 1 : 0), seatV.z + (rz - seatV.z) * s2);
+        var flat = 1.42 * s2, rising = 0;
+        var p2 = posemath.layer(posemath.layer(posemath.named('crouch'), posemath.named('stand'), s2, s2, s2, s2), CLING, s2, s2, s2, s2);
+        if (H.act && k2 >= 1) { rising = Math.sin(Math.PI * Math.min(1, H.act.t / H.act.len)); p2 = posemath.layer(p2, clip(H.act.counter ? 'counterCross' : 'hook', H.act.t / 60), 0, 1, 1, 1); }
+        if (H.hurt > 0) p2 = posemath.layer(p2, posemath.named('hurt'), 0, 0.6, 0.6, 0.6);
+        rig.applyPose(p2, { plant: false });
+        rig.body.position.y = 0; rig.root.rotation.set(flat - rising * 0.55, hd + c2.yaw - rising * 0.5, 0, 'YXZ');
+      }
+      return true;
+    },
+    dispose: function () { clearAll(); Object.keys(pat).forEach(function (k) { dropPatrol(pat[k]); }); pat = {}; bursts.forEach(function (b) { root.remove(b.g); b.mat.dispose(); }); bursts = []; [clubGeo, bandGeo, lightGeo, rayGeo, ballGeo].forEach(function (g) { g.dispose(); }); [clubMat, bandMat, goonMat, lightR, lightB].forEach(function (m) { m.dispose(); }); }
+  };
+}
+
+module.exports = { createEncView: createEncView };
