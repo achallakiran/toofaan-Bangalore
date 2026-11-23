@@ -16,7 +16,7 @@ var shotDir = process.argv[2] || path.resolve(__dirname, '..', 'dist');
   await page.goto('file://' + file);
   await page.waitForSelector('html[data-ready="1"]', { timeout: 15000 });
   var mode = await page.evaluate(function () { return window.__game.modes.currentName(); });
-  var free = await page.evaluate(function () { return !!window.__game.ctx.ride.free; });
+  var free = await page.evaluate(function () { return !!window.__game.ctx.ride.free && !!window.__game.ctx.ride.road; });
   await page.keyboard.down('KeyW'); await page.waitForTimeout(2500);
   var speed = await page.evaluate(function () { return window.__game.ctx.ride.bike.speed; });
   await page.keyboard.up('KeyW');

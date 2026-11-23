@@ -406,187 +406,6 @@ test('road fight moves: every saddle blow exists left and right, and the saddle 
   assert(moves.MOVES.bkJabL.keys[3].pose['armA.sx'] > 80 && moves.MOVES.bkJabR.keys[3].pose['armB.sx'] > 80, 'jab uses the near arm on each side');
 });
 
-console.log('ride mode (Phase 4)');
-(function () {
-  var rideMod = req('sim/ride'), rmap = req('sim/ridemap'), RD = req('data/ride');
-  function run(r, n, axis) { var inp = inputMod.createInput(), i; for (i = 0; i < n; i++) { var a = axis(i); inp.setAxis(a[0], a[1]); inp.tick(r.tick); rideMod.step(r, inp); } }
-  test('ride map: same seed, same map; ten trouble spots, each on a pavement, all different', function () {
-    var a = rmap.generate(9), b = rmap.generate(9), keys = {};
-    assert.strictEqual(JSON.stringify(a), JSON.stringify(b)); assert.strictEqual(a.targets.length, 10);
-    a.targets.forEach(function (t) { assert(rmap.onRoad(t.x, t.z, 0) && !rmap.onCarriageway(t.x, t.z), t.key + ' on the pavement'); keys[t.key] = 1; });
-    assert.strictEqual(Object.keys(keys).length, 10);
-  });
-  test('ride: the bike never leaves the roads, whatever the stick does', function () {
-    var r = rideMod.createRide(4, null), off = 0, inp = inputMod.createInput();
-    for (var i = 0; i < 4000; i++) { var k = Math.floor(i / 150) % 8, ang = k * Math.PI / 4; inp.setAxis(Math.sin(ang), Math.cos(ang)); inp.tick(r.tick); rideMod.step(r, inp); if (r.state === 'ride' && !rmap.onRoad(r.bike.x, r.bike.z, 0)) off++; }
-    assert.strictEqual(off, 0);
-  });
-  test('ride: hitting traffic fast throws him off; he gets up, runs back and rides on, and no heart is lost', function () {
-    var log = [], r = rideMod.createRide(4, { emit: function (n) { log.push(n); } }), b = r.bike, v = r.traffic[0];
-    b.speed = 15; v.kind = 'bus'; v.wait = 9999; v.axis = 'x'; v.x = b.x + Math.sin(b.h) * 2.2; v.z = b.z + Math.cos(b.h) * 2.2; v.h = b.h + Math.PI / 2;
-    run(r, 3, function () { return [0, 0]; });
-    assert.strictEqual(r.state, 'fly', 'thrown ' + r.state);
-    run(r, 900, function () { return [0, 0]; });
-    assert(log.indexOf('ride:crash') >= 0 && log.indexOf('ride:getup') >= 0 && log.indexOf('ride:remount') >= 0, log.join(','));
-    assert.strictEqual(r.state === 'ride' || r.state === 'arrived', true); assert.strictEqual(r.crashes, 1);
-  });
-  test('ride: reaching the signal stops the bike and marks the place active; after the fight the police scene plays and the next signal is another open place', function () {
-    var log = [], r = rideMod.createRide(4, { emit: function (n, e) { log.push(n + ':' + (e && e.key)); } }), T = r.target;
-    r.bike.x = T.x; r.bike.z = T.z; run(r, 2, function () { return [0, 0]; });
-    assert.strictEqual(r.state, 'arrived'); assert.strictEqual(r.missions[T.key], 'active'); assert.strictEqual(r.bike.speed, 0);
-    run(r, 200, function () { return [0, 0]; }); assert.strictEqual(r.state, 'arrived', 'waits for the fight area');
-    rideMod.afterFight(r, T.key); assert.strictEqual(r.missions[T.key], 'cleared'); assert.strictEqual(r.state, 'enc');
-    run(r, 900, function () { return [0, 0]; });
-    assert.strictEqual(r.state, 'ride'); assert(r.target && r.target.key !== T.key && r.missions[r.target.key] === 'open', 'next signal');
-  });
-  test('ride: the bike does not move on its own; forward accelerates, back brakes to a stop, and poles and trees are solid', function () {
-    var r = rideMod.createRide(4, null), x0 = r.bike.x;
-    run(r, 120, function () { return [0, 0]; }); assert.strictEqual(r.bike.speed, 0); assert.strictEqual(r.bike.x, x0);
-    run(r, 120, function () { return [0, 1]; }); assert(r.bike.speed > 8, 'accelerates ' + r.bike.speed);
-    run(r, 90, function () { return [0, -1]; }); assert(r.bike.speed <= 0.01, 'brakes ' + r.bike.speed);
-    var p = r.map.props.list[0]; assert(!rmap.clearOfProps(r.map, p.x, p.z, 0.3) && rmap.clearOfProps(r.map, p.x + 3, p.z + 3, 0.3) === rmap.clearOfProps(r.map, p.x + 3, p.z + 3, 0.3));
-  });
-  test('ride: letting go of the steering lines the bike up with the road (lane assist)', function () {
-    var r = rideMod.createRide(4, null); run(r, 60, function () { return [0, 1]; });
-    run(r, 14, function () { return [0.6, 0.8]; }); var bent = Math.abs(r.bike.h - Math.PI / 2);
-    run(r, 90, function () { return [0, 1]; }); assert(bent > 0.05 && Math.abs(r.bike.h - Math.PI / 2) < 0.02, bent + ' -> ' + (r.bike.h - Math.PI / 2));
-  });
-  (function () {
-    var RD2 = req('data/ride'), MV = req('data/moves').MOVES;
-    function fight(kind, smart, seed) {
-      var log = [], r = rideMod.createRide(seed || 5, { emit: function (n) { log.push(n); } }), inp = inputMod.createInput(), i;
-      rideMod.startEncounter(r, kind);
-      for (i = 0; i < 6000 && r.state === 'enc'; i++) {
-        var e = r.enc, atk = false, blk = false;
-        if (smart) { var o = (e.foes || []).concat(e.crew || []).filter(function (q) { return q.st === 'windup'; })[0];
-          if (o && o.t === RD2.ENC.WIND - 6) blk = true; else if (e.car && e.car.st === 'windup' && e.car.t === RD2.ENC.CAR_WIND - 6) blk = true; else atk = i % 20 === 0; }
-        inp.setButton('attack', atk); inp.setButton('block', blk); inp.tick(r.tick); rideMod.step(r, inp);
-        if (r.enc && r.enc.phase === 'down' && r.enc.t > 30) req('sim/encounter').revive(r);      /* SAVE TOOFAN */
-      }
-      return { r: r, log: log, ticks: i };
-    }
-    test('road fight, bike goons: punching and kicking beats them, then the ride goes on; their blows cost hearts', function () {
-      var f = fight('bikes', true); assert.strictEqual(f.r.state, 'ride'); assert(f.log.indexOf('enc:ko') >= 0 && f.log.indexOf('enc:end') >= 0, f.log.join(','));
-      var g = fight('bikes', false); assert(g.log.indexOf('enc:hurt') >= 0 && g.log.indexOf('enc:down') >= 0 && g.log.indexOf('enc:spark') >= 0 && g.log.indexOf('enc:resume') >= 0, 'idle hero goes down, Maa saves him, the fight goes on: ' + g.log.filter(function (k) { return /down|rise|spark|resume/.test(k); }).join(','));
-    });
-    test('road fight: down on the road, everything waits for Maa; revive gives full hearts, the goons swerve away, then the same fight goes on', function () {
-      var ENC = req('sim/encounter'), log = [], r = rideMod.createRide(5, { emit: function (n) { log.push(n); } }), inp = inputMod.createInput(), e = rideMod.startEncounter(r, 'bikes'), i;
-      e.phase = 'fight'; r.hearts = 0; inp.tick(r.tick); rideMod.step(r, inp); assert.strictEqual(e.phase, 'down'); assert(e.hero.down && log.indexOf('enc:down') >= 0);
-      for (i = 0; i < 400; i++) { inp.tick(r.tick); rideMod.step(r, inp); } assert.strictEqual(e.phase, 'down', 'waits for Maa'); assert.strictEqual(r.bike.speed, 0, 'Bijli coasts to a stop');
-      var men = e.foes.length, lat0 = e.foes.map(function (o) { return Math.abs(o.lat); });
-      assert(ENC.revive(r)); assert.strictEqual(r.hearts, 3); assert.strictEqual(e.phase, 'rise');
-      for (i = 0; i < ENC.SPARK + 45; i++) { inp.tick(r.tick); rideMod.step(r, inp); }
-      assert(log.indexOf('enc:spark') >= 0); e.foes.forEach(function (o, k) { assert(Math.abs(o.lat) > lat0[k] + 0.8, 'swerved away'); });
-      for (i = 0; i < ENC.RISE; i++) { inp.tick(r.tick); rideMod.step(r, inp); if (log.indexOf('enc:resume') >= 0) break; }
-      assert(log.indexOf('enc:resume') >= 0 && e.phase === 'fight' && !e.hero.rise && e.foes.length === men, 'the same fight goes on');
-    });
-    test('road fight, car gang: a timed block leaps onto the roof, the crew are beaten, the car spins out and the police arrest them', function () {
-      var f = fight('car', true), L = f.log;
-      ['enc:leap', 'enc:pop', 'enc:ko', 'enc:spin', 'enc:police', 'enc:arrest', 'enc:end'].forEach(function (k) { assert(L.indexOf(k) >= 0, k + ' missing: ' + L.join(',')); });
-      assert.strictEqual(f.r.state, 'ride');
-    });
-    test('road fights only when Toofan chooses: riding with no gang near never starts one; riding up to a patrol starts that fight', function () {
-      var kinds = [], r = rideMod.createRide(5, { emit: function (n, e) { if (n === 'enc:start') kinds.push(e.kind); } }), inp = inputMod.createInput(), i;
-      r.bike.x = -150; r.bike.h = Math.PI / 2; r.target = null; r.patrolCool = 1e9;          /* no gang on the roads */
-      for (i = 0; i < 6000; i++) { if (Math.abs(r.bike.x) > r.map.ext - 30) r.bike.h = r.bike.x > 0 ? -Math.PI / 2 : Math.PI / 2; inp.setAxis(0, 0.8); inp.tick(r.tick); rideMod.step(r, inp); }
-      assert.strictEqual(kinds.length, 0, 'a fight came on its own: ' + kinds.join(','));
-      /* a car patrol just ahead in his lane: he rides up to it */
-      var b = r.bike; b.x = b.px = -150; b.z = b.pz = r.map.lines[1] - RD2.LANES[1]; b.h = b.ph = Math.PI / 2; b.speed = 12; b.turn = 0; r.state = 'ride';
-      var p = { id: 'px', kind: 'car', gang: 'kalia', axis: 'x', line: r.map.lines[1], dir: 1, lane: 1, s: b.x + 12, x: b.x + Math.sin(b.h) * 10, z: b.z + Math.cos(b.h) * 10, px: 0, pz: 0, h: 0, ph: 0 };
-      p.px = p.x; p.pz = p.z; r.patrols = [p];
-      for (i = 0; i < 400 && !kinds.length; i++) {                 /* (he rides on; the chase starts as soon as the road allows a fight) */
-        if (Math.abs(b.x) > r.map.ext - 30) b.h = b.x > 0 ? -Math.PI / 2 : Math.PI / 2;
-        inp.tick(r.tick); rideMod.step(r, inp);
-      }
-      assert.deepStrictEqual(kinds, ['car']); assert.strictEqual(r.patrols.length, 0, 'the patrol became the fight'); assert.strictEqual(r.chases.kalia, 1);
-    });
-    test('gang patrols: spawn on their roads away from Toofan, keep to the road lines, at most three, the same on every run', function () {
-      function go() {
-        var r = rideMod.createRide(12, null), inp = inputMod.createInput(), i, far = true, onRoad = true, most = 0;
-        r.patrolCool = 1; r.bike.x = 0; r.bike.z = r.map.lines[0] + 5; r.bike.speed = 0;
-        for (i = 0; i < 3000; i++) {
-          inp.tick(r.tick); var before = r.patrols.length; rideMod.step(r, inp); if (r.enc) break;
-          if (r.patrols.length > before) { var q = r.patrols[r.patrols.length - 1]; if (Math.hypot(q.x - r.bike.x, q.z - r.bike.z) < 59) far = false; }
-          r.patrols.forEach(function (q) { var lat = q.axis === 'x' ? q.z - q.line : q.x - q.line; if (Math.abs(Math.abs(lat) - RD2.LANES[1]) > 1e-6) onRoad = false; });
-          most = Math.max(most, r.patrols.length);
-        }
-        return { far: far, onRoad: onRoad, most: most, h: JSON.stringify(r.patrols.map(function (q) { return [q.kind, q.gang, q.x.toFixed(3), q.z.toFixed(3)]; })) };
-      }
-      var a = go(), c = go();
-      assert(a.far, 'spawned beside him'); assert(a.onRoad, 'left the road'); assert(a.most >= 1 && a.most <= 3, 'patrols ' + a.most); assert.strictEqual(a.h, c.h);
-    });
-    test('the old mansion: past the top-left corner of the city, its gate at the end of the road north out of it, locked until every gang boss is beaten', function () {
-      var m1 = rmap.generate(7), M = m1.mansion, L = m1.lines;
-      assert.deepStrictEqual(m1.mansion, rmap.generate(7).mansion);
-      assert.strictEqual(M.gate.x, L[0]); assert(M.gate.z < L[0] && M.gate.z > -m1.ext, 'the gate is just north of the corner junction');
-      assert(M.house.z < -m1.ext - 20, 'the house is well outside the city');
-      var ev = [], r = rideMod.createRide(7, { emit: function (n) { ev.push(n); } }), inp = inputMod.createInput(); r.patrolCool = 1e9;
-      r.bike.x = r.bike.px = r.map.mansion.gate.x + 1; r.bike.z = r.bike.pz = r.map.mansion.gate.z; inp.tick(r.tick); rideMod.step(r, inp);
-      assert(ev.indexOf('ride:locked') >= 0 && ev.indexOf('ride:mansion') < 0); assert.strictEqual(r.state, 'ride', 'the locked gate changes nothing');
-      assert(!rideMod.mansionOpen(r)); r.bosses = ['antu', 'kalia', 'bhairav', 'teja']; assert(!rideMod.mansionOpen(r), 'one boss still left');
-      r.bosses.push('raju'); assert(rideMod.mansionOpen(r)); r.mansionSaid = false; inp.tick(r.tick); rideMod.step(r, inp); assert(ev.indexOf('ride:mansion') >= 0);
-    });
-    test('no dead ends: traffic and gang patrols stay inside the ring road, in their lanes, turning at junctions', function () {
-      var r = rideMod.createRide(5, null), inp = inputMod.createInput(), t, max = 0, turns = 0, off = 0, last = {}, lim = r.map.lines[r.map.lines.length - 1] + RD2.LANES[1] + 1e-6;
-      r.patrolCool = 1;
-      for (t = 0; t < 12000; t++) {
-        inp.tick(r.tick); rideMod.step(r, inp); if (r.enc) { r.enc = null; r.state = 'ride'; }
-        r.traffic.concat(r.patrols).forEach(function (v) {
-          max = Math.max(max, Math.abs(v.x), Math.abs(v.z)); if (last[v.id] && last[v.id] !== v.axis) turns++; last[v.id] = v.axis;
-          var lat = v.axis === 'x' ? v.z - v.line : v.x - v.line; if (Math.abs(Math.abs(lat) - RD2.LANES[v.lane]) > 1e-6) off++;
-        });
-      }
-      assert(max <= lim, 'past the ring: ' + max); assert.strictEqual(off, 0); assert(turns > 50, 'turns ' + turns);
-    });
-    test('a road chase that reaches the ring road turns the corner onto it and goes on', function () {
-      var ev = [], r = rideMod.createRide(5, { emit: function (n) { ev.push(n); } }), inp = inputMod.createInput(), b = r.bike, t; r.patrolCool = 1e9;
-      b.x = b.px = 60; b.z = b.pz = r.map.lines[2] - RD2.LANES[1]; b.h = b.ph = Math.PI / 2; b.speed = 12; r.state = 'ride'; req('sim/encounter').start(r, 'bikes');
-      for (t = 0; t < 1500 && r.enc; t++) { r.hearts = 3; inp.tick(r.tick); rideMod.step(r, inp); }
-      assert(ev.indexOf('enc:corner') >= 0, 'no corner'); assert(Math.abs(b.h) < 0.01 && b.z > r.map.lines[2] + 20, 'did not go on along the ring: ' + b.x + ',' + b.z + ' h' + b.h);
-      assert(rmap.onRoad(b.x, b.z, 0), 'off the road');
-    });
-    test('ride home: HOME signals the cycle-repair shop; arriving there opens the way to the hideout and touches no mission; leaving starts at the shop', function () {
-      var ev = [], r = rideMod.createRide(5, { emit: function (n) { ev.push(n); } }), inp = inputMod.createInput(), H = r.map.home, before = JSON.stringify(r.missions);
-      assert(H && H.key === 'home'); assert(r.map.targets.every(function (T) { return Math.hypot(T.x - H.x, T.z - H.z) > 20; }), 'the shop sits on its own stretch');
-      r.patrolCool = 1e9; assert(rideMod.chooseTarget(r, 'home')); assert.strictEqual(r.target, H);
-      r.bike.x = r.bike.px = H.x + 3; r.bike.z = r.bike.pz = H.z - 3; inp.tick(r.tick); rideMod.step(r, inp);
-      assert(ev.indexOf('ride:home') >= 0, ev.join(',')); assert.strictEqual(r.state, 'arrived'); assert.strictEqual(JSON.stringify(r.missions), before);
-      /* no signal needed: riding up to the shop is enough; just out of it, it does not catch him again until he has ridden off */
-      var r2 = rideMod.createRide(5, { emit: function (n) { ev.push(n); } }); ev.length = 0; r2.patrolCool = 1e9;
-      r2.bike.x = r2.bike.px = H.x + 3; r2.bike.z = r2.bike.pz = H.z - 3; inp.tick(r2.tick); rideMod.step(r2, inp);
-      assert(ev.indexOf('ride:home') >= 0, 'riding up to the shop takes him in'); rideMod.leaveHome(r2); ev.length = 0;
-      var r3 = rideMod.createRide(5, null), L3 = r3.map.lines[Math.floor(r3.map.lines.length / 2)];
-      void L3; var G3 = rideMod.homeGate(r3);
-      assert(rideMod.inHomeZone(r3, G3.x + 2, G3.z), 'the blue ring'); assert(!rideMod.inHomeZone(r3, G3.x, G3.z - 2 * RD2.LANES[1]), 'the far lane is just the road'); assert(!rideMod.inHomeZone(r3, G3.x + 20, G3.z));
-      /* riding through the ring at speed does not take him in; stopping in it does */
-      var ev3 = []; r3.bus = { emit: function (n) { ev3.push(n); } }; r3.patrolCool = 1e9; r3.target = null;
-      var B3 = r3.bike; B3.x = B3.px = G3.x + 12; B3.z = B3.pz = G3.z; B3.h = B3.ph = -Math.PI / 2; B3.speed = 12;
-      for (k = 0; k < 120; k++) { inp.setAxis(0, 1); inp.tick(r3.tick); rideMod.step(r3, inp); }
-      assert(ev3.indexOf('ride:home') < 0, 'riding past at speed took him in');
-      B3.x = B3.px = G3.x + 1; B3.z = B3.pz = G3.z; B3.speed = 1; inp.setAxis(0, 0); inp.tick(r3.tick); rideMod.step(r3, inp);
-      assert(ev3.indexOf('ride:home') >= 0, 'stopping in the ring takes him in');
-      for (var k = 0; k < 20; k++) { inp.tick(r2.tick); rideMod.step(r2, inp); }
-      assert(ev.indexOf('ride:home') < 0, 'caught again at once on the way out');
-      rideMod.leaveHome(r); assert.strictEqual(r.state, 'ride'); assert(Math.hypot(r.bike.x - H.x, r.bike.z - H.z) < 10); assert(r.target && r.target.key !== 'home');
-    });
-    test('road fight: Block pressed just before a blow lands counters it for double damage', function () {
-      var r = rideMod.createRide(5, null), inp = inputMod.createInput(), e = rideMod.startEncounter(r, 'bikes'), o = e.foes[0], i;
-      e.phase = 'fight'; o.st = 'windup'; o.t = RD2.ENC.WIND - 5; o.u = o.from * 1.3; var hp = o.hp;
-      inp.setButton('block', true); inp.tick(r.tick); rideMod.step(r, inp); inp.setButton('block', false);
-      for (i = 0; i < 8; i++) { inp.tick(r.tick); rideMod.step(r, inp); }
-      assert.strictEqual(o.hp, hp - 2); assert.strictEqual(r.hearts, 3);
-    });
-  })();
-  test('ride: same seed and same input give the same ride (deterministic)', function () {
-    var a = rideMod.createRide(11, null), b2 = rideMod.createRide(11, null), f = function (i) { return [Math.sin(i / 90), 0.6]; };
-    run(a, 700, f); run(b2, 700, f); assert.strictEqual(rideMod.hash(a), rideMod.hash(b2));
-  });
-  test('ride: traffic keeps left, in both directions on both axes', function () {
-    var r = rideMod.createRide(6, null), bad = 0; run(r, 900, function () { return [0, 0]; });
-    r.traffic.forEach(function (v) { var lat = v.axis === 'x' ? v.z - v.line : v.x - v.line, lx = Math.cos(v.h), lz = -Math.sin(v.h); if ((v.axis === 'x' ? lz : lx) * lat <= 0) bad++; });
-    assert.strictEqual(bad, 0, 'vehicles on the wrong side: ' + bad);
-  });
-})();
 test('fight areas: every kind of place opens its fight with its men close by, inside the walls and clear of props', function () {
   var LOCD = req('data/locations');
   LOCD.ORDER.forEach(function (type) {
@@ -625,19 +444,6 @@ test('arenas: a fight is only the arena: walking any way stays inside the walls,
       assert(p.x >= B.x0 - 1e-6 && p.x <= B.x1 + 1e-6 && p.z >= B.z0 - 1e-6 && p.z <= B.z1 + 1e-6, type + ': walked out going ' + dir);
     });
   });
-});
-test('ride: riding well away from the signal leaves it open for later and points to another; arriving there clears the skip', function () {
-  var rideMod2 = req('sim/ride'), R3 = req('data/ride'), ev = [], bus = { emit: function (n, e) { ev.push(n); } };
-  var r = rideMod2.createRide(9, bus), T = r.target, b = r.bike;
-  r.traffic = []; r.encCool = 1e9; r.nextEnc = null; r.patrolCool = 1e9;
-  var inp = inputMod.createInput(); inp.tick(0); rideMod2.step(r, inp);
-  /* teleport far away from the signal along the same direction away from it */
-  var dx = b.x - T.x, dz = b.z - T.z, d = Math.hypot(dx, dz) || 1; r.tBest = Math.hypot(T.x - b.x, T.z - b.z);
-  r.tKey = T.key; r.tBest = -1000;
-  inp.tick(1); rideMod2.step(r, inp);
-  assert(ev.indexOf('ride:abandon') >= 0, 'no abandon event');
-  assert(r.target && r.target.key !== T.key, 'pointer did not move on');
-  assert.strictEqual(r.missions[T.key], 'open', 'the place should stay open');
 });
 (function () {
   var lineup = req('sim/lineup'), ED = req('data/enemies');
@@ -686,32 +492,74 @@ test('gangs: a gang\'s fights lean to its own kind of fighter once the ramp brin
   var h0 = 0, k0 = 0; for (i = 0; i < 40; i++) { var l = lineup.lineup(5, rngMod.createRng(i)); h0 += l.filter(function (k) { return k === 'heavy'; }).length; k0 += l.filter(function (k) { return k === 'kicker'; }).length; }
   assert(heavies > h0 && kicks > k0, 'heavies ' + heavies + ' vs ' + h0 + ', kickers ' + kicks + ' vs ' + k0);
 });
-test('map: picking an open place on the full map makes it the signal; a cleared one is refused', function () {
-  var rideMod2 = req('sim/ride'), r = rideMod2.createRide(4, null), other = r.map.targets.filter(function (t) { return t !== r.target; })[0];
-  assert(rideMod2.chooseTarget(r, other.key)); assert.strictEqual(r.target, other);
-  r.missions[r.map.targets[0].key] = 'cleared'; assert(!rideMod2.chooseTarget(r, r.map.targets[0].key) || r.map.targets[0] === other);
-});
 
 
-/* ---------------- free ride (toofaan-Bangalore, Phase 1) ---------------- */
+
+/* ---------------- the curved road and the Bangalore ride ---------------- */
 (function () {
-  var rideMod = req('sim/ride'), inputMod2 = req('core/input');
-  function drive(seed, ticks) {
-    var r = rideMod.createRide(seed, null, { free: true }), inp = inputMod2.createInput(), i;
-    for (i = 0; i < ticks; i++) { inp.setAxis(Math.sin(i / 90) * 0.4, 1); inp.tick(r.tick); rideMod.step(r, inp); }
+  var roadMod = req('sim/road'), B = req('sim/bride'), COURSE = req('data/course'), inputMod3 = req('core/input'), rm = roadMod;
+  function angD(a, b) { return Math.atan2(Math.sin(a - b), Math.cos(a - b)); }
+  var road = roadMod.build(7);
+  test('road: a closed loop, long enough to ride, with no bend tighter than 20 m and no two far-apart parts near each other', function () {
+    var f0 = roadMod.frame(road, 0, 0), f1 = roadMod.frame(road, road.length - 0.001, 0);
+    assert(Math.hypot(f0.x - f1.x, f0.z - f1.z) < 0.05, 'the loop does not close'); assert(road.length > 1000 && road.length < 1600, 'length ' + road.length);
+    var i, j, minR = 1e9, minSep = 1e9;
+    for (i = 0; i < road.N; i++) { var d = angD(road.hs[(i + 1) % road.N], road.hs[i]); minR = Math.min(minR, road.ds / Math.abs(d || 1e-9)); }
+    for (i = 0; i < road.N; i += 3) for (j = i + 1; j < road.N; j += 3) { if (Math.min(j - i, road.N - (j - i)) * road.ds < 150) continue; minSep = Math.min(minSep, Math.hypot(road.xs[i] - road.xs[j], road.zs[i] - road.zs[j])); }
+    assert(minR >= 20, 'tightest bend ' + minR); assert(minSep >= 90, 'parts only ' + minSep + ' m apart');
+  });
+  test('road: a place along the road and a sideways offset survive the trip to a point and back', function () {
+    [5, 120, 333.3, 640, 900.5, 1200].forEach(function (s) { [-5.1, -1.9, 0, 1.9, 5.1, 9].forEach(function (lat) {
+      var fr = roadMod.frame(road, s, lat), pr = roadMod.project(road, fr.x, fr.z, Math.round(s / road.ds));
+      assert(Math.abs(roadMod.gap(road, s, pr.s)) < 0.3, 's ' + s + ' came back as ' + pr.s); assert(Math.abs(pr.lat - lat) < 0.3, 'lat ' + lat + ' came back as ' + pr.lat);
+    }); });
+  });
+  test('road: every kind of stretch is on the loop, and potholes only where the road is broken', function () {
+    var kinds = {}, i; road.type.forEach(function (t) { kinds[t] = 1; });
+    ['fast', 'jam', 'broken', 'combo'].forEach(function (k) { assert(kinds[k], 'no ' + k + ' stretch'); });
+    assert(road.holes.length > 20, 'too few potholes: ' + road.holes.length);
+    road.holes.forEach(function (h) { assert(roadMod.surfaceAt(road, h.s).type !== 'jam' || roadMod.surfaceAt(road, h.s).rough > 0, 'pothole in a clean stretch at ' + h.s); assert(Math.abs(h.l) < COURSE.HALF, 'pothole off the carriageway'); });
+    var cleanSample = roadMod.surfaceAt(road, road.length * 0.1); assert.strictEqual(cleanSample.type, 'fast'); assert.strictEqual(cleanSample.rough, 0);
+  });
+  function drive(o) {
+    var r = B.createRide(o.seed || 7, { emit: function (n, d) { (o.ev || (o.ev = [])).push(n); if (o.on) o.on(n, d); } }, { s: o.s, noTraffic: !!o.clear }), inp = inputMod3.createInput(), i;
+    if (o.setup) o.setup(r);
+    for (i = 0; i < o.ticks; i++) {
+      var b = r.bike, e = (o.lat === undefined ? 5.1 : o.lat) - b.lat, des = roadMod.project(r.road, b.x, b.z, b.i).h + Math.max(-0.5, Math.min(0.5, e * 0.15));
+      inp.setAxis(-Math.max(-1, Math.min(1, angD(des, b.h) * 2.5)), o.thr === undefined ? 1 : o.thr); inp.tick(r.tick); B.step(r, inp);
+      if (o.each) o.each(r);
+    }
     return r;
   }
-  test('free ride: no signal, no patrols, no encounters and no arrivals, however long he rides', function () {
-    var r = drive(7, 6000);
-    assert.strictEqual(r.target, null); assert.strictEqual(r.patrols.length, 0); assert.strictEqual(r.enc, null); assert.strictEqual(r.arrivals, 0);
-    assert(r.state !== 'arrived' && r.state !== 'enc', 'state ' + r.state);
+  test('bride: the same seed and the same inputs give the same ride, tick for tick; another seed differs', function () {
+    assert.strictEqual(B.hash(drive({ seed: 7, ticks: 900 })), B.hash(drive({ seed: 7, ticks: 900 }))); assert.notStrictEqual(B.hash(drive({ seed: 7, ticks: 900 })), B.hash(drive({ seed: 8, ticks: 900 })));
   });
-  test('free ride: the bike still rides, steers and traffic still moves', function () {
-    var r = drive(7, 600), moved = Math.hypot(r.bike.x + 40, r.bike.z) > 20 || r.crashes > 0, t0 = r.traffic[0];
-    assert(moved, 'the bike did not go anywhere'); assert(r.traffic.some(function (v) { return v.v > 0; }), 'no traffic moving'); assert(t0);
+  test('bride: on a fast stretch he reaches full speed; on a broken one the bike is held to its cap; a jam does not slow him, only the traffic', function () {
+    var fast = 0, broken = 0, bs = roadMod.surfaceAt(road, road.length * 0.52), top = 0;
+    drive({ s: 20, ticks: 420, clear: true, each: function (r) { fast = Math.max(fast, r.bike.speed); } });
+    drive({ s: road.length * 0.46, ticks: 360, clear: true, lat: 5.1, each: function (r) { if (r.stretch.type === 'broken' && r.stretch.cap < 0.6) broken = Math.max(broken, r.bike.speed); } });
+    assert(fast > 16, 'only ' + fast + ' m/s on the open road'); assert(broken > 0 && broken <= 17 * 0.6, 'held to ' + broken + ' m/s on broken road, cap ' + bs.cap);
   });
-  test('free ride: same seed and inputs give the same ride, tick for tick; another seed differs', function () {
-    assert.strictEqual(rideMod.hash(drive(7, 900)), rideMod.hash(drive(7, 900))); assert.notStrictEqual(rideMod.hash(drive(7, 900)), rideMod.hash(drive(8, 900)));
+  test('bride: riding into a pothole slows the bike, costs health and says so; a clean road does neither', function () {
+    var h = road.holes.filter(function (q) { return !q.deep && Math.abs(q.l) < 4; })[0], ev = [], r = drive({ s: h.s - 12, lat: h.l, thr: 0.55, ticks: 300, clear: true, ev: ev });
+    assert(ev.indexOf('ride:pothole') >= 0, 'no pothole event: ' + ev.join(',')); assert(r.bike.hp < 100, 'no damage');
+    var ev2 = [], r2 = drive({ s: 20, ticks: 200, clear: true, ev: ev2 }); assert.strictEqual(r2.bike.hp, 100); assert(ev2.indexOf('ride:pothole') < 0);
+  });
+  test('bride: a vehicle coming head-on sees him, honks and swerves round; nothing touches', function () {
+    var ev = [], r = drive({ s: 100, lat: -5.1, thr: 0.8, ticks: 420, clear: true, ev: ev, setup: function (r0) { B.addVehicle(r0, { s: 100 + 90, dir: -1, lane: 1, v: 9, base: 9, kind: 'car' }); } });
+    assert(ev.indexOf('ride:honk') >= 0, 'no honk'); assert(ev.indexOf('ride:hit') < 0, 'it hit him'); assert.strictEqual(r.bike.hp, 100);
+  });
+  test('bride: one that has no room to swerve brakes instead of running him down', function () {
+    var ev = [], r = drive({ s: 100, lat: 5.1, thr: 0.0, ticks: 360, clear: true, ev: ev, setup: function (r0) { r0.bike.speed = 0; B.addVehicle(r0, { s: 100 - 25, dir: 1, lane: 1, v: 10, base: 10, kind: 'bus' }); } });
+    assert(ev.indexOf('ride:honk') >= 0, 'no honk'); assert.strictEqual(r.bike.hp, 100, 'the bus ran him down');
+  });
+  test('bride: touching a stopped vehicle at speed costs speed and health, the driver shouts, and a hard hit throws him off', function () {
+    var ev = [], hits = [], r = drive({ s: 100, lat: 5.1, thr: 1, ticks: 300, clear: true, ev: ev, on: function (n, d) { if (n === 'ride:hit') hits.push(d); }, setup: function (r0) { B.addVehicle(r0, { s: 100 + 45, dir: 1, lane: 1, v: 0, base: 0, kind: 'car', rt: 9999 }); } });
+    assert(hits.length >= 1 && hits[0].sev === 2, 'no hard hit: ' + JSON.stringify(hits[0])); assert(ev.indexOf('ride:crash') >= 0, 'not thrown'); assert(r.bike.hp <= 90, 'hp ' + r.bike.hp);
+  });
+  test('bride: a long ride never leaves the road or goes through a vehicle, and the traffic stays busy', function () {
+    var maxLat = 0, minTraffic = 1e9, r = drive({ s: 20, ticks: 3000, thr: 0.8, each: function (q) { maxLat = Math.max(maxLat, Math.abs(q.bike.lat)); if (q.tick > 300) minTraffic = Math.min(minTraffic, q.traffic.length); } });
+    assert(maxLat <= COURSE.HALF + COURSE.PAVE, 'lat ' + maxLat); assert(minTraffic >= 12, 'the road emptied: ' + minTraffic);
   });
 })();
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
