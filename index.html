@@ -2853,7 +2853,7 @@ function trySpawn(r, s) {
   if (near >= Math.max(1, surf.dens * 0.4)) return false;                  /* as busy as this stretch gets, within 20 m each way */
   var lo = K.speed[0], hi = K.speed[1], base = lo + rng.next() * (hi - lo);
   var v = { id: r.nextId++, kind: kind, look: Math.floor(rng.next() * 4), dir: dir, lane: lane, s: s, l: 0, tl: 0, v: 0, base: base, wait: 0, hitCool: 0, honkCool: Math.floor(rng.next() * 120),
-    react: 0, rt: 14 + Math.floor(rng.next() * 22), temper: rng.next(), x: 0, z: 0, h: 0, px: 0, pz: 0, ph: 0, hd: 0 };
+    react: 0, rt: 10 + Math.floor(rng.next() * 16), temper: rng.next(), x: 0, z: 0, h: 0, px: 0, pz: 0, ph: 0, hd: 0, st: 0 };
   v.l = v.tl = laneLat(v); v.v = base * surf.tv * 0.8; place(r, v); v.px = v.x; v.pz = v.z; v.ph = v.h; v.hd = v.h;
   r.traffic.push(v); return true;
 }
@@ -2862,6 +2862,19 @@ function honk(r, v, dist, why) {
   if (v.honkCool > 0 || r.honkGap > 0) return;
   v.honkCool = 70 + Math.floor(r.rng.next() * 110); r.honkGap = 10;
   r.bus.emit('ride:honk', { id: v.id, kind: v.kind, dist: dist, why: why });
+}
+
+/* a vehicle steers like a vehicle: a front-wheel angle (limited, and smaller at speed) turns the body about its wheelbase, so it can only
+   move sideways by driving forward along a curve. It aims at a point ahead on the road at the lateral offset it wants (pure pursuit). */
+function drive(r, v, K) {
+  var road = r.road, L = road.length, wb = Math.max(1.0, K.len * 0.6);
+  var look = Math.max(3.5, v.v * 0.25 + K.len * 0.8), sa = ((v.s + v.dir * look) % L + L) % L, tgt = roadMod.frame(road, sa, v.tl);
+  var err = angDiff(Math.atan2(tgt.x - v.x, tgt.z - v.z), v.h), dmax = 0.65 / (1 + v.v * 0.07);
+  var steer = clamp(err * 2.2, -dmax, dmax);
+  v.st += clamp(steer - v.st, -2.2 * DT, 2.2 * DT);                          /* the wheel takes a moment to turn */
+  v.h += v.v / wb * Math.tan(v.st) * DT;
+  v.x += Math.sin(v.h) * v.v * DT; v.z += Math.cos(v.h) * v.v * DT;
+  var pj = roadMod.project(road, v.x, v.z, v.s); v.s = pj.s; v.l = pj.lat;
 }
 
 function stepTraffic(r) {
@@ -2874,6 +2887,8 @@ function stepTraffic(r) {
   }
   for (i = list.length - 1; i >= 0; i--) if (Math.abs(roadMod.gap(road, b.s, list[i].s)) > DESPAWN) list.splice(i, 1);
 
+  if (r.blat === undefined) { r.blat = b.lat; r.blv = 0; }
+  r.blv += ((b.lat - r.blat) / DT - r.blv) * 0.15; r.blat = b.lat;      /* how fast he is moving across the road: drivers read where he is going, not just where he is */
   var bvx = Math.sin(b.h) * b.speed, bvz = Math.cos(b.h) * b.speed;
   for (i = 0; i < list.length; i++) {
     var v = list[i], K = KINDS[v.kind], surf = roadMod.surfaceAt(road, v.s);
@@ -2892,11 +2907,12 @@ function stepTraffic(r) {
     }
 
     /* Toofan ahead: watch him, then honk and swerve round; if there is no room to swerve, brake */
-    var dx = b.x - v.x, dz = b.z - v.z, fwd = dx * fvx + dz * fvz, lat = dx * fvz - dz * fvx, dist = Math.hypot(dx, dz);
-    var closing = v.v - (bvx * fvx + bvz * fvz), look = 8 + Math.max(0, closing) * 1.5, clear = K.r + R.BIKE_R + 1.0;
+    var dx = b.x - v.x, dz = b.z - v.z, dist = Math.hypot(dx, dz);
+    var fwd = v.dir * roadMod.gap(road, v.s, b.s), tt = Math.min(2, Math.max(0, fwd) / Math.max(1, v.v - (bvx * fvx + bvz * fvz))), lat = v.dir * (b.lat + clamp(r.blv, -6, 6) * tt - v.l);      /* where he is along and across the road (a straight line is wrong on a bend) */
+    var closing = v.v - (bvx * fvx + bvz * fvz), look = 12 + Math.max(0, closing) * 2.4, clear = K.r + R.BIKE_R + 1.0;
     var threat = fwd > K.len / 2 - 0.6 && fwd < look && Math.abs(lat) < clear && closing > 0.4;
     if (threat) v.react++; else if (v.react > 0) v.react = Math.max(0, v.react - 2);
-    if (v.react > v.rt) {
+    if (v.react > v.rt * Math.min(1, 12 / Math.max(12, closing))) {      /* the faster he is coming, the quicker it reacts */
       honk(r, v, dist, 'ahead');
       /* swerve to whichever side gets it furthest from him (away from him if both are open), staying in its own half of the road */
       var need = clear - Math.abs(lat), hi = C.HALF - K.r - 0.3, lo = -hi, bestTl = v.l, bestSep = Math.abs(lat), away = lat > 0 ? -1 : 1, sgn;
@@ -2907,18 +2923,15 @@ function stepTraffic(r) {
         if (sep > bestSep) { bestSep = sep; bestTl = tlc; }
       }
       v.tl = bestTl;
-      if (bestSep < clear * 0.9) want = Math.min(want, Math.max(0, fwd - K.len / 2 - R.BIKE_R - 1.5) * 0.9);     /* no room: brake */
-      else want = Math.min(want, Math.max(v.v * 0.55, 2));
+      if (bestSep < clear * 0.6) want = Math.min(want, Math.max(0, fwd - K.len / 2 - R.BIKE_R - 1.5) * 0.9);     /* no room: brake */
+      else want = Math.min(want, Math.max(v.base * 0.6, 3));
     } else if (!threat && v.react === 0 && !(Math.abs(fwd) < K.len / 2 + 2.5 && Math.abs(lat) < clear + 0.8)) v.tl = laneLat(v);      /* back into its lane only once it is clear of him */
     /* the jam talks: horns from the crawl, now and then */
     if ((surf.type === 'jam' || surf.type === 'combo') && dist < 45 && v.honkCool <= 0 && r.rng.next() < 0.0012 + 0.004 * v.temper * (v.v < 2 ? 1 : 0)) honk(r, v, dist, 'jam');
 
-    v.l += clamp(v.tl - v.l, -3 * DT, 3 * DT);
     v.v += clamp(want - v.v, -8 * DT, 3 * DT);
     if (v.v < 0) v.v = 0;
-    v.s = ((v.s + v.dir * v.v * DT) % road.length + road.length) % road.length;
-    place(r, v);
-    v.hd += angDiff(v.h, v.hd) * 0.16;
+    drive(r, v, K);
   }
 }
 
@@ -3051,8 +3064,8 @@ function hash(r) {
 
 /* (for tests and tools) put one vehicle on the road */
 function addVehicle(r, o) {
-  var K = KINDS[o.kind || 'car'], v = { id: r.nextId++, kind: o.kind || 'car', look: 0, dir: o.dir || 1, lane: o.lane === undefined ? 1 : o.lane, s: o.s, l: 0, tl: 0, v: o.v || 0, base: o.base !== undefined ? o.base : (o.v !== undefined ? o.v : 8), wait: 0, hitCool: 0, honkCool: 0,
-    react: 0, rt: o.rt || 20, temper: 0.5, x: 0, z: 0, h: 0, px: 0, pz: 0, ph: 0, hd: 0 };
+  var K = KINDS[o.kind || 'car'], v = { id: r.nextId++, kind: o.kind || 'car', look: 0, dir: o.dir || 1, lane: o.lane === undefined ? 1 : o.lane, s: o.s, l: 0, tl: 0, v: o.v || 0, base: o.base !== undefined ? o.base : (o.v !== undefined ? o.v : 8), wait: 0, hitCool: 0, honkCool: 0, st: 0,
+    react: 0, rt: o.rt || 20, temper: 0.5, x: 0, z: 0, h: 0, px: 0, pz: 0, ph: 0, hd: 0, st: 0 };
   v.l = v.tl = laneLat(v); place(r, v); v.px = v.x; v.pz = v.z; v.ph = v.h; v.hd = v.h; r.traffic.push(v); return v;
 }
 
