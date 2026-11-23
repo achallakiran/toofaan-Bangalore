@@ -522,7 +522,7 @@ test('gangs: a gang\'s fights lean to its own kind of fighter once the ramp brin
     var cleanSample = roadMod.surfaceAt(road, road.length * 0.1); assert.strictEqual(cleanSample.type, 'fast'); assert.strictEqual(cleanSample.rough, 0);
   });
   function drive(o) {
-    var r = B.createRide(o.seed || 7, { emit: function (n, d) { (o.ev || (o.ev = [])).push(n); if (o.on) o.on(n, d); } }, { s: o.s, noTraffic: !!o.clear }), inp = inputMod3.createInput(), i;
+    var r = B.createRide(o.seed || 7, { emit: function (n, d) { (o.ev || (o.ev = [])).push(n); if (o.on) o.on(n, d); } }, { s: o.s, noTraffic: !!o.clear, noBrawl: !o.brawl }), inp = inputMod3.createInput(), i;
     if (o.setup) o.setup(r);
     for (i = 0; i < o.ticks; i++) {
       var b = r.bike, e = (o.lat === undefined ? 5.1 : o.lat) - b.lat, des = roadMod.project(r.road, b.x, b.z, b.i).h + Math.max(-0.5, Math.min(0.5, e * 0.15));
@@ -556,6 +556,23 @@ test('gangs: a gang\'s fights lean to its own kind of fighter once the ramp brin
   test('bride: touching a stopped vehicle at speed costs speed and health, the driver shouts, and a hard hit throws him off', function () {
     var ev = [], hits = [], r = drive({ s: 100, lat: 5.1, thr: 1, ticks: 300, clear: true, ev: ev, on: function (n, d) { if (n === 'ride:hit') hits.push(d); }, setup: function (r0) { B.addVehicle(r0, { s: 100 + 45, dir: 1, lane: 1, v: 0, base: 0, kind: 'car', rt: 9999 }); } });
     assert(hits.length >= 1 && hits[0].sev === 2, 'no hard hit: ' + JSON.stringify(hits[0])); assert(ev.indexOf('ride:crash') >= 0, 'not thrown'); assert(r.bike.hp <= 90, 'hp ' + r.bike.hp);
+  });
+  test('brawl: a touched, hot-tempered driver steps out and fights in place with Toofan\'s own combat; knocked fighters clear; he is back on the bike', function () {
+    var ev = [], bus = { emit: function (n, d) { ev.push(n); } }, r = B.createRide(7, bus, { s: 100, noTraffic: true }), inp = inputMod3.createInput(), i, st;
+    var v = B.addVehicle(r, { s: 112, dir: 1, lane: 1, v: 0, base: 0, kind: 'car', temper: 1 }); v.hitCool = 0;
+    r.bike.speed = 14; r.rng = { next: function () { return 0; }, fork: function () { return this; } };                /* (the roll always says: get out) */
+    for (i = 0; i < 400 && r.state !== 'brawl'; i++) { inp.setAxis(0, 1); inp.tick(r.tick); B.step(r, inp); }
+    assert.strictEqual(r.state, 'brawl', 'no brawl: ' + r.state + ' ' + ev.join());
+    assert(r.brawl && r.brawl.combat.enemies.length === 1 && r.brawl.joined === 1, 'the driver did not step out');
+    r.rng = require(S + '/core/rng').createRng(5);
+    var fw = r.brawl, e = fw.combat.enemies[0], hits = 0;
+    for (i = 0; i < 3000 && r.state === 'brawl'; i++) {                       /* walk to him and mash attack */
+      var pl = fw.player, dx = e.x - pl.x, dz = e.z - pl.z, d = Math.hypot(dx, dz) || 1;
+      inp.setAxis(d > 1.2 ? dx / d : 0, d > 1.2 ? -dz / d : 0); if (i % 24 === 0 && d < 1.8) fw.pendingStrikes.push({ move: i % 72 === 0 ? 'cross' : 'jab', last: i % 72 === 0 }); inp.tick(r.tick); B.step(r, inp);
+      if (fw.state === 'thappad') break;
+    }
+    assert(ev.indexOf('hit') >= 0, 'no blow landed'); assert(ev.indexOf('ride:join') >= 0);
+    assert(r.state === 'ride' || fw.state === 'thappad', 'still in the fight: ' + r.state + ' ' + fw.state + ' hp ' + fw.player.hp);
   });
   test('bride: a long ride never leaves the road or goes through a vehicle, and the traffic stays busy', function () {
     var maxLat = 0, minTraffic = 1e9, r = drive({ s: 20, ticks: 3000, thr: 0.8, each: function (q) { maxLat = Math.max(maxLat, Math.abs(q.bike.lat)); if (q.tick > 300) minTraffic = Math.min(minTraffic, q.traffic.length); } });

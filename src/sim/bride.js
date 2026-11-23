@@ -8,6 +8,7 @@
 var R = require('../data/ride');
 var C = require('../data/course');
 var roadMod = require('./road');
+var brawlMod = require('./brawl');
 var rngMod = require('../core/rng');
 
 var DT = 1 / 60;
@@ -87,7 +88,7 @@ function stepTraffic(r) {
     var v = list[i], K = KINDS[v.kind], surf = roadMod.surfaceAt(road, v.s);
     v.px = v.x; v.pz = v.z; v.ph = v.h;
     if (v.honkCool > 0) v.honkCool--; if (v.hitCool > 0) v.hitCool--;
-    if (v.wait > 0) { v.wait--; v.v = 0; continue; }
+    if (v.wait > 0) { if (!v.out && v.wait < 1e8) v.wait--; v.v = 0; continue; }
     var want = v.base * surf.tv, fvx = Math.sin(v.h), fvz = Math.cos(v.h);
 
     /* keep a gap to whoever is in front, in the same direction and the same part of the road */
@@ -146,7 +147,7 @@ function createRide(seed, bus, opts) {
     bike: { x: fr.x, z: fr.z, px: fr.x, pz: fr.z, h: fr.h, ph: fr.h, speed: 0, turn: 0, grace: 0, s: s0, lat: C.LANES[1], i: Math.round(s0 / road.ds) % road.N, hp: 100, rough: 0, jolt: 0, inHole: -1, wrecked: false },
     hero: { x: 0, z: 0, px: 0, pz: 0, vx: 0, vz: 0, face: 0, spin: 0 },
     state: 'ride', t: 0, traffic: [], nextId: 1, honkGap: 0, filling: false,
-    crashes: 0, hits: 0, hearts: 3, enc: null, target: null, patrols: [], arrivals: 0, stretch: roadMod.surfaceAt(road, s0)
+    crashes: 0, hits: 0, brawl: null, pendingBrawl: null, noBrawl: !!(opts && opts.noBrawl), hearts: 3, enc: null, target: null, patrols: [], arrivals: 0, stretch: roadMod.surfaceAt(road, s0)
   };
   /* fill the road around the start, then let it settle */
   if (opts && opts.noTraffic) r.noSpawn = true; else fillAround(r, s0);
@@ -164,6 +165,12 @@ function step(r, input) {
   r.t++;
   stepTraffic(r);
   var surf = roadMod.surfaceAt(road, b.s); r.stretch = surf;
+  /* a driver who got out: the fight starts as soon as he is off the ground (on the bike, or back on his feet after a fall) */
+  if (r.pendingBrawl && (r.state === 'ride' || r.state === 'run')) {
+    var pv = null; for (i = 0; i < r.traffic.length; i++) if (r.traffic[i].id === r.pendingBrawl) pv = r.traffic[i];
+    if (pv) brawlMod.begin(r, pv); else r.pendingBrawl = null;
+  }
+  if (r.state === 'brawl') { brawlMod.step(r, input); r.tick++; return; }
 
   if (r.state === 'ride') {
     var mx = s.mx, my = s.my, mag = Math.min(1, Math.hypot(mx, my)), back = my < -0.35;
@@ -218,7 +225,8 @@ function step(r, input) {
       if (v.hitCool > 0) { b.speed = Math.min(b.speed, Math.max(2, v.v)); continue; }          /* still touching: no second hit, but no going through */
       if (rel < 1) { b.speed = Math.min(b.speed, v.v + 0.5); continue; }       /* a nudge at a crawl: no harm, just no way through */
       var sev = rel < 3 ? 0 : rel < 8 ? 1 : 2, was = b.speed;
-      v.hitCool = 50; if (sev > 0) v.wait = 30; b.speed *= HIT_SLOW[sev]; hurt(r, HIT_DAMAGE[sev]); r.hits++;
+      v.hitCool = 50; if (sev > 0) v.wait = 30;
+      if (!r.noBrawl && !r.brawl && !r.pendingBrawl && !v.out && brawlMod.wants(r, v, sev)) { r.pendingBrawl = v.id; v.wait = 1e9; v.v = 0; } b.speed *= HIT_SLOW[sev]; hurt(r, HIT_DAMAGE[sev]); r.hits++;
       r.bus.emit('ride:hit', { id: v.id, kind: v.kind, sev: sev, rel: rel, x: v.x, z: v.z });
       honk(r, v, 0, 'hit');
       if (sev === 2 && was > 9 && b.grace <= 0) {                              /* a hard hit throws him off */
@@ -259,7 +267,7 @@ function hash(r) {
 /* (for tests and tools) put one vehicle on the road */
 function addVehicle(r, o) {
   var K = KINDS[o.kind || 'car'], v = { id: r.nextId++, kind: o.kind || 'car', look: 0, dir: o.dir || 1, lane: o.lane === undefined ? 1 : o.lane, s: o.s, l: 0, tl: 0, v: o.v || 0, base: o.base !== undefined ? o.base : (o.v !== undefined ? o.v : 8), wait: 0, hitCool: 0, honkCool: 0, st: 0,
-    react: 0, rt: o.rt || 20, temper: 0.5, x: 0, z: 0, h: 0, px: 0, pz: 0, ph: 0, hd: 0, st: 0 };
+    react: 0, rt: o.rt || 20, temper: o.temper === undefined ? 0.5 : o.temper, x: 0, z: 0, h: 0, px: 0, pz: 0, ph: 0, hd: 0, st: 0 };
   v.l = v.tl = laneLat(v); place(r, v); v.px = v.x; v.pz = v.z; v.ph = v.h; v.hd = v.h; r.traffic.push(v); return v;
 }
 
@@ -270,4 +278,4 @@ function teleport(r, s) {
   r.traffic = []; if (!r.noSpawn) fillAround(r, s);
 }
 
-module.exports = { teleport: teleport, addVehicle: addVehicle, createRide: createRide, step: step, hash: hash, hitVehicle: hitVehicle, KINDS: KINDS };
+module.exports = { brawl: brawlMod, teleport: teleport, addVehicle: addVehicle, createRide: createRide, step: step, hash: hash, hitVehicle: hitVehicle, KINDS: KINDS };

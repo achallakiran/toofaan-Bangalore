@@ -1022,6 +1022,7 @@ module.exports = {
   NEAR: ['ARRE BHAI!', 'DEKH KE!', 'ODE ODE!', 'SIDE DO!', 'AANKH HAI KYA?'],
   HIT: ['ARRE BHAI, KYA KAR RAHA HAI?!', 'GAADI KO KHARONCH AAYI!', 'DEKH KE CHALA, PAGAL!', 'ABEY! LICENSE HAI KYA?', 'EMI BAAKI H YAAR!', 'ANDHA HAI KYA?!'],
   HARD: ['OYE!! TERI TO!!', 'MERI GAADI!!', 'POLICE KO BULAU KYA?!', 'RUK! RUK! RUK!', 'BHAI SAHAB, YE KYA KIYA!!'],
+  JOIN: ['MERI GAADI KO HAATH LAGAYA?!', 'RUK, MAIN AATA HOON!', 'BHAI KO MAT MAARO!', 'IDHAR AA, TERI TO!', 'AAJ HISAAB CHUKTA KARTE HAIN!'],
   HOLE: ['AAH! GADDHA!', 'BANGALORE KE ROAD!', 'KAMAR GAYI!', 'BBMP ZINDABAD...']
 };
 
@@ -1577,6 +1578,10 @@ var sfxmod = require('../view/sfx');
 var musicMod = require('../view/music');
 var speechMod = require('../view/speech');
 var SH = require('../data/shouts');
+var brawlview = require('../view/brawlview');
+var thappadMod = require('./thappad');
+var cinecard = require('../view/cinecard');
+var fightworld = require('../sim/fightworld');
 
 var VIEWS = ['OVERHEAD', 'CHASE', 'CLOSE', 'RIDER'];
 
@@ -1619,6 +1624,7 @@ function createRide() {
       function cycle() { S.view = (S.view + 1) % VIEWS.length; S.ui.view.textContent = 'VIEW: ' + VIEWS[S.view]; S.cam = null; }
       S.ui.view.textContent = 'VIEW: ' + VIEWS[0]; S.ui.view.addEventListener('click', function (e) { e.stopPropagation(); cycle(); });
       var key = function (e) { if (e.code === 'KeyV' && !e.repeat) cycle(); }; window.addEventListener('keydown', key); scope.add(function () { window.removeEventListener('keydown', key); });
+      ctx.debug.startBrawl = function () { var r = S.r, best = null, bd = 1e9; r.traffic.forEach(function (v) { var d = Math.hypot(v.x - r.bike.x, v.z - r.bike.z); if (d < bd) { bd = d; best = v; } }); if (best && r.state === 'ride') { best.temper = 1; rideSim.brawl.begin(r, best); } };
       ctx.debug.cycleView = cycle; ctx.debug.teleport = function (sv) { rideSim.teleport(S.r, sv); S.cam = null; S.v.prime(sv); }; ctx.debug.rideMode = S;
       scope.add(ctx.bus.on('ride:honk', function (e) { if (e.dist < 24 && S.honkT <= 0) { S.sfx.honk(); S.honkT = 0.5; } if (e.dist < 7 && e.why === 'bike') shout(e.id, SH.NEAR, 1.4); }));
       scope.add(ctx.bus.on('ride:hit', function (e) {
@@ -1634,17 +1640,48 @@ function createRide() {
         if (S.t - S.pot > 3 && S.speech) { S.pot = S.t; var L = SH.HOLE; S.speech.say(L[S.nShout++ % L.length], function () { var B = S.r.bike; return { x: B.x, y: 2.9, z: B.z }; }, 1.6); }
       }));
       scope.add(ctx.bus.on('ride:wrecked', function () { say('BIKE HALAAT KHARAB! GARAGE JAO', 2.6); }));
+      /* the brawl: the fight presenter lives while r.brawl does; the buttons turn into attack, block and finisher */
+      S.bv = null; scope.add(function () { if (S.bv) { S.bv.dispose(); S.bv = null; } });
+      scope.add(ctx.bus.on('ride:brawl', function () { S.sfx.engineOff(); say('KHAAT KHAAT! BAHAR NIKLA!', 1.6); S.joinLine = 0; }));
+      scope.add(ctx.bus.on('ride:join', function (e) { if (S.speech) { var id = e.id; S.speech.say(SH.JOIN[S.nShout++ % SH.JOIN.length], function () { var q = vehicle(id); return { x: q ? q.x : S.r.bike.x, y: 3.1, z: q ? q.z : S.r.bike.z }; }, 2); } S.shake = 0.2; }));
+      scope.add(ctx.bus.on('ride:smash', function () { say('GAADI KO MAARA?!', 1.2); }));
+      scope.add(ctx.bus.on('ride:police', function () { S.sfx.honk(); setTimeout(function () { S.sfx.honk(); }, 350); say('POLICE AA GAYI!', 2); }));
+      scope.add(ctx.bus.on('fight:clear', function () { say('ROAD CLEAR!', 1.8); }));
+      scope.add(ctx.bus.on('ride:brawlEnd', function () { S.cam = null; S.sfx.start(); }));
+      var white = document.createElement('div'); white.style.cssText = 'position:fixed;inset:0;z-index:43;pointer-events:none;background:#fff;opacity:0;transition:opacity .9s'; document.body.appendChild(white);
+      var tmr = []; scope.add(function () { white.remove(); tmr.forEach(clearTimeout); if (S.thp) { S.thp.dispose(); S.thp = null; } });
+      var tapK = function (e) { if (S.thp && (e.code === 'Space' || e.code === 'KeyJ' || e.code === 'Enter') && !e.repeat) S.thp.tap(); };
+      var ab = ctx.touchRoot.querySelector('#btnAttack'), tapP = function () { if (S.thp) S.thp.tap(); };
+      window.addEventListener('keydown', tapK); if (ab) ab.addEventListener('pointerdown', tapP);
+      scope.add(function () { window.removeEventListener('keydown', tapK); if (ab) ab.removeEventListener('pointerdown', tapP); });
+      scope.add(ctx.bus.on('fight:thappad', function () {
+        S.sfx.engineOff();
+        S.thp = ctx.debug.thp = thappadMod.createThappad(ctx, { sfx: S.sfx, onGiveUp: function () {
+          cinecard.show({ title: 'GAME OVER', sub: 'Toofan fell on the road', ms: 2600 });
+          tmr.push(setTimeout(function () { ctx.ride = null; ctx.go('ride'); }, 2800));
+        }, onDone: function () {
+          white.style.transition = 'none'; white.style.opacity = 1;
+          if (S.thp) { S.thp.dispose(); S.thp = null; }
+          fightworld.revive(S.r.brawl);
+          requestAnimationFrame(function () { white.style.transition = 'opacity .9s'; white.style.opacity = 0; });
+        } });
+      }));
+      scope.add(ctx.bus.on('fight:spark', function () { S.shake = 0.3; S.sfx.bolt && S.sfx.bolt(); white.style.transition = 'none'; white.style.opacity = 0.55; requestAnimationFrame(function () { white.style.transition = 'opacity .5s'; white.style.opacity = 0; }); }));
       S.stretchName = '';
     },
     step: function (ctx, tick) {
       ctx.input.tick(tick);
       if (ctx.debug.freeze) return;
       if (ctx.input.state.pressed.finisher && S.r.state === 'ride') S.honkQ = true;
+      if (S.r.brawl && S.bv) S.bv.pre();
       rideSim.step(S.r, ctx.input);
     },
     render: function (ctx, alpha) {
       var now = ctx.now(), dt = S.last ? Math.min(0.05, (now - S.last) / 1000) : 1 / 60; S.last = now; S.t += dt;
       var r = S.r, b = r.bike, x = b.px + (b.x - b.px) * alpha, z = b.pz + (b.z - b.pz) * alpha;
+      if (r.brawl && !S.bv) { S.bv = brawlview.createBrawlView(ctx, { fw: r.brawl, anchor: r.brawl.anchor, k: R.SCALE, sfx: S.sfx }); ctx.touch.setMode('fight'); S.ui.view.style.display = 'none'; ctx.debug.brawl = S.bv; }
+      else if (!r.brawl && S.bv) { S.bv.dispose(); S.bv = null; ctx.touch.setMode('ride'); ctx.touch.setFinisherVisible(true); S.ui.view.style.display = ''; }
+      if (S.thp) { S.thp.render(dt); return; }                                           /* Maa's world has the screen */
       S.v.sync(r, alpha, dt, S.t); S.speech.update(ctx.view.camera, dt);
       var near = (ctx.view.canvas.clientHeight || 700) < 520 ? 0.82 : 1;
       var cx = x, cz = z, yaw = b.h, sp = Math.max(0, b.speed);
@@ -1659,6 +1696,7 @@ function createRide() {
       else shot = { x: c.x + sy * 0.2, y: 2.45, z: c.z + cy * 0.2, lx: c.x + sy * 14, ly: 1.7, lz: c.z + cy * 14, fov: 74 };
       if (S.shake > 0) { var sh = S.shake * 0.25; shot.x += (Math.random() - 0.5) * sh; shot.y += (Math.random() - 0.5) * sh; S.shake = Math.max(0, S.shake - dt * 1.5); }
       if (b.rough > 0.2 && r.state === 'ride') { shot.y += Math.sin(S.t * 41) * 0.05 * b.rough; shot.x += Math.cos(S.t * 37) * 0.04 * b.rough; }
+      if (S.bv) { shot = S.bv.update(dt, alpha); ctx.touch.setFinisherVisible(r.brawl.player.rage >= 100); }
       ctx.view.followCamera(0, 0, shot);
       ctx.view.render();
       if (r.state === 'ride') S.sfx.engine(dt, { rpm: 0.2 + 0.8 * Math.abs(b.speed) / R.TOP, thr: Math.max(0.15, ctx.input.state.my), speed: b.speed, drifting: false, braking: ctx.input.state.held.block, air: false });
@@ -1670,6 +1708,7 @@ function createRide() {
       var st = r.stretch;
       var nm = st ? st.name : ''; if (nm !== S.stretchName) { S.stretchName = nm; if (nm) say(nm.toUpperCase(), 1.8); }
       S.ui.stretch.textContent = nm ? nm.toUpperCase() + '  ·  ' + (st.type === 'fast' ? 'FAST' : st.type === 'jam' ? 'JAM' : st.type === 'broken' ? 'BROKEN' : 'JAM + BROKEN') : '';
+      S.ui.stretch.style.display = S.bv ? 'none' : '';
       S.ui.hp.style.width = Math.max(0, b.hp) + '%'; S.ui.hp.style.background = b.hp > 60 ? '#4ade80' : b.hp > 30 ? '#facc15' : '#f87171';
       S.ui.speed.textContent = r.state === 'ride' ? Math.round(Math.abs(b.speed) * 3.6) + ' km/h' : '';
       S.hudT = (S.hudT || 0) - dt;
@@ -2807,6 +2846,122 @@ A.flyover = function (K) {
 module.exports = { A: A, BOUNDS: BOUNDS, START: START, southBarrier: southBarrier, backdrop: backdrop, cornerTrees: cornerTrees };
 
 };
+defs["sim/brawl"]=function(module,exports,require){
+/* sim: a street brawl, in place. The fight itself is Toofan's own (sim/combat and sim/fightworld, unchanged: walk, lock, blows, guard,
+   timed-block counters, rage, the finisher, knockdowns, Maa ka Thappad). Only the ground differs: the road. The fight is simulated at the
+   brawler's own scale (one fight unit is SCALE metres of road, so Toofan and the drivers are the same size here as in a brawl at a place)
+   around an anchor point on the road; the view draws it scaled back up. A driver who is touched, and whose temper says so, steps out and
+   fights; whoever is knocked into another vehicle, or hits one, brings its driver in too (up to MAX at once). A long fight brings the police.
+   Plain data, seeded; no graphics, no DOM. */
+'use strict';
+
+var R = require('../data/ride');
+var C = require('../data/course');
+var rngMod = require('../core/rng');
+var combatMod = require('./combat');
+var fightworld = require('./fightworld');
+var roadMod = require('./road');
+
+var K = R.SCALE, MAX = 8, POLICE_AT = 60 * 55, CLEAR_HOLD = 150, POLICE_HOLD = 200;
+var BIG = 1e5;
+
+/* what steps out of each vehicle */
+var KIND_OF = { scooter: 'thug', auto: 'thug', car: 'thug', sedan: 'thug', taxi: 'thug', tempo: 'stick', pickup: 'stick', suv: 'stick', bus: 'heavy', truck: 'heavy', tanker: 'heavy' };
+
+function toWorld(fw, x, z) { return { x: fw.anchor.x + x * K, z: fw.anchor.z + z * K }; }
+function toFight(fw, x, z) { return { x: (x - fw.anchor.x) / K, z: (z - fw.anchor.z) / K }; }
+
+/* a driver decides, from his temper and how hard he was hit, whether to get out (decided once, by the seeded roll) */
+function wants(r, v, sev) {
+  var p = Math.max(0, Math.min(0.95, 0.12 + v.temper * 0.62 + sev * 0.14));
+  return r.rng.next() < p;
+}
+
+function begin(r, v) {
+  if (r.brawl) return join(r, v);
+  var b = r.bike, h = r.hero, seed = (r.seed ^ Math.imul(r.tick + 1, 2654435761)) >>> 0, fr;
+  /* he steps off where he is: from the bike, or where he came to rest after a fall */
+  if (r.state === 'ride') { h.x = b.x + Math.cos(b.h) * 1.3; h.z = b.z - Math.sin(b.h) * 1.3; h.face = b.h; b.speed = 0; }
+  h.px = h.x; h.pz = h.z;
+  var fw = {
+    seed: seed, tick: 0, rng: rngMod.createRng(seed), bus: r.bus, type: 'street', name: 'Street fight', anchor: { x: h.x, z: h.z },
+    arena: { solids: [], ox: 0, oz: 0 }, bounds: { x0: -BIG, x1: BIG, z0: -BIG, z1: BIG },
+    player: { x: 0, z: 0, px: 0, pz: 0, face: Math.atan2(v.x - h.x, v.z - h.z), moving: false, rage: 0, hp: 100, maxHp: 100, stun: 0, guard: false, down: false, invuln: false },
+    combat: combatMod.createCombat(), pendingStrikes: [], counters: { attacks: 0, blocks: 0, finishers: 0 },
+    attackLock: false, invuln: false, graceT: 0, state: 'fight', owner: {}, joined: 0, endT: 0, policeAt: POLICE_AT
+  };
+  var c = fw.combat; c.enabled = true; c.wave = 2; c.auto = false; c.lineup = null; c.banner = ''; c.bannerT = 0;
+  r.brawl = fw; r.state = 'brawl'; r.pendingBrawl = null; b.speed = 0; b.slide = 0; fw.hadMen = false;
+  r.bus.emit('ride:brawl', { x: h.x, z: h.z });
+  join(r, v);
+}
+
+/* a driver steps out of his vehicle, onto the road beside it */
+function join(r, v) {
+  var fw = r.brawl; if (!fw || v.out || fw.joined >= MAX) return false;
+  var K0 = R.KINDS[v.kind], side = v.dir > 0 ? 1 : -1, door = toFight(fw, v.x + Math.cos(v.h) * side * (K0.r + 0.6), v.z - Math.sin(v.h) * side * (K0.r + 0.6));
+  v.out = true; v.v = 0; v.wait = 1e9; v.hitCool = 1e9;
+  var kind = KIND_OF[v.kind] || 'thug'; if (kind === 'thug' && v.temper > 0.8) kind = 'stick';
+  combatMod.spawn(fw, kind, door.x, door.z); var e = fw.combat.enemies[fw.combat.enemies.length - 1];
+  e.face = Math.atan2(fw.player.x - e.x, fw.player.z - e.z); fw.owner[e.id] = v.id; fw.joined++; fw.hadMen = true;
+  r.bus.emit('ride:join', { id: v.id, enemy: e.id, kind: v.kind });
+  return true;
+}
+
+function vehicleOf(r, id) { for (var i = 0; i < r.traffic.length; i++) if (r.traffic[i].id === id) return r.traffic[i]; return null; }
+
+/* people stay on the road and its pavements, and walk round the vehicles; knocking into a stranger's vehicle brings its driver out */
+function ground(r, fw) {
+  var c = fw.combat, actors = [fw.player].concat(c.enemies.filter(function (e) { return !e.dead && e.st !== 'dead'; })), i, j, lim = C.HALF + C.PAVE - 0.5;
+  for (i = 0; i < actors.length; i++) {
+    var a = actors[i], w = toWorld(fw, a.x, a.z), moved = false;
+    var q = roadMod.project(r.road, w.x, w.z, r.bike.i);
+    if (Math.abs(q.lat) > lim) { var f = roadMod.frame(r.road, q.s, Math.max(-lim, Math.min(lim, q.lat))); w.x = f.x; w.z = f.z; moved = true; }
+    for (j = 0; j < r.traffic.length; j++) {
+      var v = r.traffic[j]; if (Math.abs(v.x - w.x) > 8 || Math.abs(v.z - w.z) > 8) continue;
+      var K0 = R.KINDS[v.kind], fx = Math.sin(v.h), fz = Math.cos(v.h), half = Math.max(0, K0.len / 2 - K0.r);
+      var t = Math.max(-half, Math.min(half, (w.x - v.x) * fx + (w.z - v.z) * fz)), cx = v.x + fx * t, cz = v.z + fz * t, dx = w.x - cx, dz = w.z - cz, d = Math.hypot(dx, dz), min = K0.r + 0.45;
+      if (d >= min) continue;
+      if (d < 1e-4) { dx = Math.cos(v.h); dz = -Math.sin(v.h); d = 1; }
+      w.x = cx + dx / d * min; w.z = cz + dz / d * min; moved = true;
+      /* a stranger's vehicle: he is flung or lunging into it, or the hero is swinging at it, and its driver comes out */
+      var flung = a === fw.player ? !!fw.attackLock : (a.st === 'hurt' || a.st === 'down' || Math.hypot(a.kx || 0, a.kz || 0) > 0.02);
+      if (!v.out && flung && fw.joined < MAX && v.temper > 0.2 && v.v < 4) { join(r, v); r.bus.emit('ride:smash', { id: v.id, x: v.x, z: v.z }); }
+    }
+    if (moved) { var nf = toFight(fw, w.x, w.z); a.x = nf.x; a.z = nf.z; }
+  }
+}
+
+function step(r, input) {
+  var fw = r.brawl, h = r.hero, c = fw.combat, b = r.bike;
+  h.px = h.x; h.pz = h.z;
+  if (fw.state === 'fight' || fw.state === 'rise' || fw.state === 'thappad' || fw.state === 'intro') {
+    fightworld.step(fw, input);
+    if (fw.state === 'fight' || fw.state === 'rise') ground(r, fw);
+    /* a fight that drags on brings the police: the fighters scatter */
+    if (fw.state === 'fight' && fw.tick > fw.policeAt && c.enemies.some(function (e) { return !e.dead && e.st !== 'dead'; })) {
+      fw.state = 'police'; fw.endT = 0; c.enemies.forEach(function (e) { if (!e.dead && e.st !== 'down') { e.st = 'scatter'; } }); r.bus.emit('ride:police', {});
+    }
+  } else if (fw.state === 'cleared' || fw.state === 'police') {
+    fw.tick++; fw.endT++;
+    if (fw.state === 'police') c.enemies.forEach(function (e) { if (e.st === 'scatter') { e.px = e.x; e.pz = e.z; var d = Math.hypot(e.x - fw.player.x, e.z - fw.player.z) || 1; e.x += (e.x - fw.player.x) / d * 0.09; e.z += (e.z - fw.player.z) / d * 0.09; e.face = Math.atan2(e.x - fw.player.x, e.z - fw.player.z); } });
+    if (fw.endT > (fw.state === 'police' ? POLICE_HOLD : CLEAR_HOLD)) { end(r); return; }
+  }
+  var w = toWorld(fw, fw.player.x, fw.player.z); h.x = w.x; h.z = w.z; h.face = fw.player.face;
+  var pr = roadMod.project(r.road, h.x, h.z, b.i);
+}
+
+/* the street goes back to normal: the drivers get in and drive off, and he is back on Bijli */
+function end(r) {
+  var fw = r.brawl, b = r.bike, h = r.hero, i;
+  for (i = 0; i < r.traffic.length; i++) { var v = r.traffic[i]; if (v.out) { v.out = false; v.wait = 0; v.hitCool = 40; v.react = 0; } }
+  r.brawl = null; r.state = 'ride'; r.t = 0; b.speed = 0; b.grace = R.GRACE_TICKS; h.x = h.px = b.x; h.z = h.pz = b.z;
+  r.bus.emit('ride:brawlEnd', { cleared: fw.state === 'cleared', police: fw.state === 'police', kills: fw.combat.kills });
+}
+
+module.exports = { begin: begin, join: join, step: step, end: end, wants: wants, toWorld: toWorld, toFight: toFight, MAX: MAX };
+
+};
 defs["sim/bride"]=function(module,exports,require){
 /* sim: the Bangalore ride. Toofan on Bijli seen from above, riding the curved road through its stretches: fast and open, jammed,
    broken (potholes slow the bike), or both. Stick pushes her on (harder = faster), left/right steers, pull back or Block to brake.
@@ -2818,6 +2973,7 @@ defs["sim/bride"]=function(module,exports,require){
 var R = require('../data/ride');
 var C = require('../data/course');
 var roadMod = require('./road');
+var brawlMod = require('./brawl');
 var rngMod = require('../core/rng');
 
 var DT = 1 / 60;
@@ -2897,7 +3053,7 @@ function stepTraffic(r) {
     var v = list[i], K = KINDS[v.kind], surf = roadMod.surfaceAt(road, v.s);
     v.px = v.x; v.pz = v.z; v.ph = v.h;
     if (v.honkCool > 0) v.honkCool--; if (v.hitCool > 0) v.hitCool--;
-    if (v.wait > 0) { v.wait--; v.v = 0; continue; }
+    if (v.wait > 0) { if (!v.out && v.wait < 1e8) v.wait--; v.v = 0; continue; }
     var want = v.base * surf.tv, fvx = Math.sin(v.h), fvz = Math.cos(v.h);
 
     /* keep a gap to whoever is in front, in the same direction and the same part of the road */
@@ -2956,7 +3112,7 @@ function createRide(seed, bus, opts) {
     bike: { x: fr.x, z: fr.z, px: fr.x, pz: fr.z, h: fr.h, ph: fr.h, speed: 0, turn: 0, grace: 0, s: s0, lat: C.LANES[1], i: Math.round(s0 / road.ds) % road.N, hp: 100, rough: 0, jolt: 0, inHole: -1, wrecked: false },
     hero: { x: 0, z: 0, px: 0, pz: 0, vx: 0, vz: 0, face: 0, spin: 0 },
     state: 'ride', t: 0, traffic: [], nextId: 1, honkGap: 0, filling: false,
-    crashes: 0, hits: 0, hearts: 3, enc: null, target: null, patrols: [], arrivals: 0, stretch: roadMod.surfaceAt(road, s0)
+    crashes: 0, hits: 0, brawl: null, pendingBrawl: null, noBrawl: !!(opts && opts.noBrawl), hearts: 3, enc: null, target: null, patrols: [], arrivals: 0, stretch: roadMod.surfaceAt(road, s0)
   };
   /* fill the road around the start, then let it settle */
   if (opts && opts.noTraffic) r.noSpawn = true; else fillAround(r, s0);
@@ -2974,6 +3130,12 @@ function step(r, input) {
   r.t++;
   stepTraffic(r);
   var surf = roadMod.surfaceAt(road, b.s); r.stretch = surf;
+  /* a driver who got out: the fight starts as soon as he is off the ground (on the bike, or back on his feet after a fall) */
+  if (r.pendingBrawl && (r.state === 'ride' || r.state === 'run')) {
+    var pv = null; for (i = 0; i < r.traffic.length; i++) if (r.traffic[i].id === r.pendingBrawl) pv = r.traffic[i];
+    if (pv) brawlMod.begin(r, pv); else r.pendingBrawl = null;
+  }
+  if (r.state === 'brawl') { brawlMod.step(r, input); r.tick++; return; }
 
   if (r.state === 'ride') {
     var mx = s.mx, my = s.my, mag = Math.min(1, Math.hypot(mx, my)), back = my < -0.35;
@@ -3028,7 +3190,8 @@ function step(r, input) {
       if (v.hitCool > 0) { b.speed = Math.min(b.speed, Math.max(2, v.v)); continue; }          /* still touching: no second hit, but no going through */
       if (rel < 1) { b.speed = Math.min(b.speed, v.v + 0.5); continue; }       /* a nudge at a crawl: no harm, just no way through */
       var sev = rel < 3 ? 0 : rel < 8 ? 1 : 2, was = b.speed;
-      v.hitCool = 50; if (sev > 0) v.wait = 30; b.speed *= HIT_SLOW[sev]; hurt(r, HIT_DAMAGE[sev]); r.hits++;
+      v.hitCool = 50; if (sev > 0) v.wait = 30;
+      if (!r.noBrawl && !r.brawl && !r.pendingBrawl && !v.out && brawlMod.wants(r, v, sev)) { r.pendingBrawl = v.id; v.wait = 1e9; v.v = 0; } b.speed *= HIT_SLOW[sev]; hurt(r, HIT_DAMAGE[sev]); r.hits++;
       r.bus.emit('ride:hit', { id: v.id, kind: v.kind, sev: sev, rel: rel, x: v.x, z: v.z });
       honk(r, v, 0, 'hit');
       if (sev === 2 && was > 9 && b.grace <= 0) {                              /* a hard hit throws him off */
@@ -3069,7 +3232,7 @@ function hash(r) {
 /* (for tests and tools) put one vehicle on the road */
 function addVehicle(r, o) {
   var K = KINDS[o.kind || 'car'], v = { id: r.nextId++, kind: o.kind || 'car', look: 0, dir: o.dir || 1, lane: o.lane === undefined ? 1 : o.lane, s: o.s, l: 0, tl: 0, v: o.v || 0, base: o.base !== undefined ? o.base : (o.v !== undefined ? o.v : 8), wait: 0, hitCool: 0, honkCool: 0, st: 0,
-    react: 0, rt: o.rt || 20, temper: 0.5, x: 0, z: 0, h: 0, px: 0, pz: 0, ph: 0, hd: 0, st: 0 };
+    react: 0, rt: o.rt || 20, temper: o.temper === undefined ? 0.5 : o.temper, x: 0, z: 0, h: 0, px: 0, pz: 0, ph: 0, hd: 0, st: 0 };
   v.l = v.tl = laneLat(v); place(r, v); v.px = v.x; v.pz = v.z; v.ph = v.h; v.hd = v.h; r.traffic.push(v); return v;
 }
 
@@ -3080,7 +3243,7 @@ function teleport(r, s) {
   r.traffic = []; if (!r.noSpawn) fillAround(r, s);
 }
 
-module.exports = { teleport: teleport, addVehicle: addVehicle, createRide: createRide, step: step, hash: hash, hitVehicle: hitVehicle, KINDS: KINDS };
+module.exports = { brawl: brawlMod, teleport: teleport, addVehicle: addVehicle, createRide: createRide, step: step, hash: hash, hitVehicle: hitVehicle, KINDS: KINDS };
 
 };
 defs["sim/combat"]=function(module,exports,require){
@@ -4086,6 +4249,157 @@ function boxesToArrays(boxes, palette) {
 module.exports = { boxesToArrays: boxesToArrays, hexToRgb: hexToRgb };
 
 };
+defs["view/brawlview"]=function(module,exports,require){
+/* view: a street brawl drawn in place on the road. Toofan's own fight presentation (the move clips and combo, block and counter, the finisher
+   whirl, knockdowns, the rock stand, hit-stop, comic words, sparks, sweat and blood, the fight HUD), lifted from the fight mode so the same
+   fight can play anywhere. It works in the brawler's own units inside a group scaled up to ride size and placed at the fight's anchor, so
+   nothing about the fight changes but where it stands. Reads the fight world (sim/brawl) only. */
+'use strict';
+
+var moveData = require('../data/moves');
+var herorig = require('./herorig');
+var posemath = require('./posemath');
+var moveplayer = require('./moveplayer');
+var fxmod = require('./fx');
+var cinecam = require('./cinecam');
+var enemyview = require('./enemyview');
+var fightui = require('./fightui');
+var lettering = require('./lettering');
+var rockstand = require('./rockstand');
+var combatMod = require('../sim/combat');
+
+function groupCentre(fw, hx, hz) {
+  var sx = 0, sz = 0, n = 0, list = fw.combat.enemies;
+  for (var i = 0; i < list.length; i++) { var e = list[i]; if (e.dead || e.st === 'dead') continue; if (Math.hypot(e.x - hx, e.z - hz) < 7) { sx += e.x; sz += e.z; n++; } }
+  return n ? { x: sx / n, z: sz / n } : null;
+}
+
+/* opts: fw (the fight world), anchor {x,z}, k (scale), sfx */
+function createBrawlView(ctx, opts) {
+  var fw = opts.fw, k = opts.k, A = opts.anchor, sfx = opts.sfx, scene = ctx.view.scene, camera = ctx.view.camera, S = {}, subs = [];
+  var group = new THREE.Group(); group.scale.setScalar(k); group.position.set(A.x, 0, A.z); scene.add(group);
+  function W(p) { return { x: A.x + p.x * k, y: p.y * k, z: A.z + p.z * k }; }                      /* fight units -> world */
+  var rig = herorig.createHeroRig(); group.add(rig.root);
+  var blobG = new THREE.CircleGeometry(0.5, 16); blobG.rotateX(-Math.PI / 2); var blobM = new THREE.MeshBasicMaterial({ color: 0x1a120c, transparent: true, opacity: 0.3, depthWrite: false });
+  var blob = new THREE.Mesh(blobG, blobM); blob.scale.set(1, 1, 1); blob.position.y = 0.06; group.add(blob);
+  var mp = moveplayer.createMovePlayer(), fx = fxmod.createFx(group), txt = lettering.createLettering(), cine = cinecam.createDirector(), ev = enemyview.createEnemyView(group), ui = fightui.createFightUi();
+  var cur = posemath.named('stand'), phase = 0, t = 0, face = fw.player.face, blockW = 0, hurtW = 0, downW = 0, counterIdx = 0, freeze = 0, slow = 0, focusPt = null, focusT = 0, rise = false, riseYaw = 0, lastMv = null, whirlT = -9;
+  function on(name, fn) { subs.push(ctx.bus.on(name, fn)); }
+  function say(word, at, hot) { txt.say(word, W(at), camera, hot); }
+  function heroPoint(y) { var p = fw.player; return { x: p.x + Math.sin(face) * 0.8, y: y, z: p.z + Math.cos(face) * 0.8 }; }
+
+  mp.onFx(function (kind) {
+    var rp = rig.root.position, pt = kind === 'boom' ? rig.guitarPoint(30, 0, 0) : rp;
+    if (kind === 'boom') pt = { x: pt.x, y: pt.y, z: pt.z };
+    fx.spawn(kind, pt, rig.root.rotation.y);
+    var hp0 = { x: rp.x, y: 2.0, z: rp.z };
+    if (kind === 'boom') { say('boom', hp0, true); sfx.boom(); }
+    else if (kind === 'slam') { say('smash', hp0, true); sfx.smash(); }
+    else if (kind === 'whirl' && t - whirlT > 1.2) { whirlT = t; say('whirl', hp0, false); sfx.swirl(); }
+    if (kind === 'slam') cine.shake(0.28, 0.7); else if (kind === 'boom') cine.shake(0.2, 0.7);
+  });
+  mp.onHit(function (move, idx, last) { fw.pendingStrikes.push({ move: move, last: last }); });
+  on('hit', function (e) {
+    var p = fw.player, dx = e.x - p.x, dz = e.z - p.z, dl = Math.hypot(dx, dz) || 1, ux = dx / dl, uz = dz / dl, hy = e.high ? 1.6 : 1.2;
+    fx.spawn('spark', { x: e.x - ux * 0.25, y: hy, z: e.z - uz * 0.25 }, 0); cine.shake(0.05 + e.power * 0.12, 0.2); freeze = 0.04 + e.power * 0.05; ev.shove(e.id, ux, uz, 0.12 + e.power * 0.22 + (e.down ? 0.1 : 0));
+    fx.droplets('sweat', { x: e.x, y: 1.65, z: e.z }, ux, uz, 5 + Math.round(e.power * 5), e.power);
+    fx.droplets('blood', { x: e.x - ux * 0.2, y: hy, z: e.z - uz * 0.2 }, ux, uz, (e.killed || e.down ? 12 : 4) + Math.round(e.power * 4), e.power);
+    var wk = e.move === 'counter' ? null : e.move, lastBlow = e.down && wk;
+    if (wk) say(lastBlow && !e.killed ? 'fall' : wk, { x: e.x, y: hy + 0.25, z: e.z }, e.power > 0.55 || !!lastBlow);
+    sfx.hit(e.move === 'counter' ? 'cross' : e.move, e.power); if (e.down) sfx.fall();
+    var fpt = e.high ? ev.facePoint(e.id) : null;
+    if (fpt) {
+      var sgn = e.move === 'hook' ? 1 : (e.move === 'hookB' ? -1 : 0), up = e.move === 'uppercut' ? 3.2 : 0.4, ddx = ux * (sgn ? 0.35 : 1) + uz * sgn * 1.1, ddz = uz * (sgn ? 0.35 : 1) - ux * sgn * 1.1, mo = { x: fpt.mx, y: fpt.my, z: fpt.mz };
+      fx.droplets('spit', mo, ddx, ddz, 4 + Math.round(e.power * 4), 0.4 + e.power * 0.5, up);
+      fx.droplets('blood', mo, ddx, ddz, 3 + Math.round(e.power * 3) + (e.down ? 4 : 0), 0.5 + e.power * 0.5, up);
+    }
+  });
+  on('enemyBlock', function (e) {
+    say(e.broke ? 'guardbreak' : 'block', { x: e.x, y: 1.5, z: e.z }, !!e.broke); sfx.block(!!e.broke);
+    fx.spawn('blockspark', { x: e.x, y: 1.4, z: e.z }, e.broke ? 1.6 : 0.2); cine.shake(e.broke ? 0.1 : 0.04, 0.16); freeze = e.broke ? 0.12 : 0.05;
+  });
+  on('block', function (e) { say('thud', heroPoint(1.7), false); sfx.block(false); fx.spawn('blockspark', heroPoint(1.3), e.timed ? 1.5 : 0); cine.shake(e.timed ? 0.06 : 0.03, 0.15); if (e.timed) freeze = 0.07; });
+  on('counter', function (e) { mp.play(e.kind === 'double' ? 'counterWhirl' : (e.kind === 'special' ? ['counterBoom', 'counterSmash'][counterIdx++ % 2] : 'counterCross')); });
+  on('lastKo', function (e) {
+    slow = 1.1; focusPt = { x: e.x, z: e.z }; focusT = 1.7;
+    cine.playShot([{ t: 0, dist: 5.2, h: 2.2, look: 1.3, fov: 42, rel: 2.3 }, { t: 0.7, dist: 3.9, h: 1.4, look: 1.3, fov: 34, rel: 3.5 }, { t: 1.7, dist: 5.6, h: 2.6, look: 1.2, fov: 44, rel: 4.5 }], 1.7);
+  });
+  on('heroFloored', function () { cine.shake(0.16, 0.45); freeze = 0.12; say('fall', heroPoint(0.6), true); sfx.fall && sfx.fall(); });
+  on('heroUp', function () { sfx.whoosh && sfx.whoosh(0.5); });
+  on('playerHurt', function () {
+    mp.cancel(); hurtW = 1; cine.shake(0.1, 0.25); freeze = 0.1; say('hurt', heroPoint(1.8), true); sfx.hit('cross', 0.8); fx.spawn('spark', heroPoint(1.4), 0.6);
+    var pl = fw.player; fx.droplets('sweat', { x: pl.x, y: 1.7, z: pl.z }, -Math.sin(face), -Math.cos(face), 7, 0.6); fx.droplets('blood', { x: pl.x, y: 1.5, z: pl.z }, -Math.sin(face), -Math.cos(face), 3, 0.4);
+  });
+  on('guardbreak', function () { mp.cancel(); hurtW = 1; cine.shake(0.12, 0.3); fx.spawn('spark', heroPoint(1.3), 1); });
+  on('action', function (e) {
+    if (e.type === 'attack' && !ctx.input.state.held.block && fw.player.stun <= 0 && !fw.player.down) mp.press();
+    if (e.type === 'finisher') { mp.play(moveData.FINISHER); say('finisher', { x: fw.player.x, y: 2.3, z: fw.player.z }, true); sfx.mega(); }
+  });
+  on('fight:rise', function () { rise = true; riseYaw = face; downW = 0; hurtW = 0; sfx.whoosh(0.8); });
+  on('fight:resume', function () { rise = false; cur = posemath.named('guard') || posemath.named('stand'); });
+  on('fight:thappad', function () { mp.cancel(); ui.show(false); });
+
+  return {
+    fw: fw, group: group, mp: mp, ev: ev,
+    /* before each sim tick: the same two lines the fight mode sets */
+    pre: function () {
+      var cm0 = mp.current(), mv0 = cm0 && moveData.MOVES[cm0];
+      fw.attackLock = mp.active();
+      fw.invuln = !!(mv0 && mv0.counter) || cm0 === 'counterCross';
+    },
+    /* every frame: poses, effects and HUD; returns the camera shot in world units */
+    update: function (real, alpha) {
+      var dt = real;
+      if (freeze > 0) { freeze -= real; dt *= 0.05; } else if (slow > 0) { slow -= real; dt *= 0.3; } if (focusT > 0) focusT -= real; t += dt;
+      var p = fw.player, x = p.px + (p.x - p.px) * alpha, z = p.pz + (p.z - p.pz) * alpha, speed = Math.hypot(p.x - p.px, p.z - p.pz) * 60, target;
+      if (p.moving) { phase += speed * dt / 1.9; target = posemath.walkPose(phase, 1 + Math.min(0.2, speed / 20)); } else target = posemath.idlePose(t);
+      posemath.approach(cur, target, 16, dt);
+      var pose = cur, mo = mp.update(dt);
+      var hurtT = p.stun > 0 ? 1 : 0; hurtW += (hurtT - hurtW) * (1 - Math.exp(-(hurtT ? 24 : 8) * dt));
+      downW += ((p.down ? 1 : 0) - downW) * (1 - Math.exp(-6 * dt));
+      if (mo) pose = posemath.layer(pose, mo.pose, mo.wLower, mo.wUpper, mo.wArmA, mo.wArmB);
+      var bt = (p.guard && !mp.active() && !mo) ? 1 : 0; blockW += (bt - blockW) * (1 - Math.exp(-(bt ? 7 : 5) * dt));
+      if (blockW > 0.01) { var bw = posemath.smooth(blockW); pose = posemath.layer(pose, posemath.named('block'), bw * 0.85, bw); }
+      if (hurtW > 0.02) { var hw = posemath.smooth(hurtW); pose = posemath.layer(pose, posemath.named('hurt'), hw, hw, hw, hw); }
+      if (downW > 0.02) { var dw = posemath.smooth(downW); pose = posemath.layer(pose, posemath.named('down'), dw, dw, dw, dw); }
+      var riseLift = 0;
+      if (p.kd > 0 && !p.down) {
+        var ke = (combatMod.KD - p.kd + alpha) / 60, kdn = combatMod.KD_DOWN / 60;
+        if (ke < kdn) pose = posemath.blend(cur, posemath.named('down'), posemath.smooth(ke / 0.22));
+        else { var ks = rockstand.at(ke - kdn, 1.75, 0.45); pose = ks.pose; riseLift = ks.lift; }
+        cur = posemath.copy(pose); mp.cancel();
+      }
+      if (rise && fw.state === 'rise') { var rs = rockstand.at(fw.riseT / 60); pose = rs.pose; riseLift = rs.lift; cur = posemath.copy(pose); }
+      ev.sync(fw.combat.enemies, alpha, dt, fw.combat.target, fw.combat.seqId); ui.update(p, fw.combat); ui.show(fw.state === 'fight' || fw.state === 'cleared' || fw.state === 'police');
+      fx.update(dt);
+      var dyaw = Math.atan2(Math.sin(p.face - face), Math.cos(p.face - face)); face += dyaw * (1 - Math.exp(-14 * dt));
+      rig.root.position.set(x, riseLift, z); rig.root.rotation.y = face; blob.position.x = x; blob.position.z = z; blob.scale.set(0.9, 1, 0.9);
+      rig.applyPose(pose, { plant: true }); rig.flutter(t, p.moving ? 0.5 : 0.12);
+      var cmw = mp.current(); if (cmw !== lastMv) { lastMv = cmw; if (cmw && !moveData.MOVES[cmw].counter) sfx.whoosh(0.5); }
+      var cm = mp.current(), cl = cm ? moveData.MOVES[cm].len : 0, ct = mp.time();
+      cine.update(dt, cm, ct, cm ? Math.min(ct / 0.55, (cl - ct) / 0.7, 1) : 0);
+      var focus = focusT > 0 ? focusPt : groupCentre(fw, x, z), shot = cine.weight > 0.001 || cine.shakeT > 0 ? cine.resolve(x, z, face, focus) : null;
+      if (rise && fw.state === 'rise') {
+        var RZ = 300, ra = riseYaw + Math.PI * 2 * posemath.smooth(fw.riseT / RZ), rr = 4.6 - 0.8 * Math.sin(Math.PI * fw.riseT / RZ);
+        shot = { x: x + Math.sin(ra) * rr, y: 1.6 + 0.8 * Math.sin(Math.PI * fw.riseT / RZ), z: z + Math.cos(ra) * rr, lx: x, ly: 1.25, lz: z, fov: 50 };
+      }
+      if (!shot) {                                                                       /* the brawl's own raised view, a little wider when several men are in */
+        var men = fw.combat.enemies.filter(function (e) { return !e.dead && e.st !== 'dead'; }).length, up = 1 + Math.min(0.5, (men - 1) * 0.12);
+        shot = { x: x, y: 6.4 * up, z: z + 6.6 * up, lx: x, ly: 1.0, lz: z - 2.2, fov: 46 };
+      }
+      var wl = W({ x: shot.x, y: shot.y, z: shot.z }), wk = W({ x: shot.lx, y: shot.ly, z: shot.lz });
+      return { x: wl.x, y: wl.y, z: wl.z, lx: wk.x, ly: wk.y, lz: wk.z, fov: shot.fov };
+    },
+    dispose: function () {
+      subs.forEach(function (u) { if (typeof u === 'function') u(); });
+      scene.remove(group); ev.dispose(); fx.dispose(); txt.dispose(); ui.dispose(); blobG.dispose(); blobM.dispose();
+    }
+  };
+}
+
+module.exports = { createBrawlView: createBrawlView };
+
+};
 defs["view/brideview"]=function(module,exports,require){
 /* view: the curved Bangalore road. A ribbon of tarmac along the loop (patched and cracked where it is broken, potholes as dark pools), roadside
    rows of shops and flats built in 40 m chunks near the bike and released behind it, poles with sagging wires, trees, the bike, the rider
@@ -4355,7 +4669,7 @@ function createBrideView(scene) {
       var jy = (b.rough || 0) * 0.06 * Math.sin(t * 38) + (b.jolt || 0) * 0.05;
       bike.root.position.set(x, jy, z); bike.root.rotation.order = 'YXZ'; bike.root.rotation.y = h; bike.root.rotation.x = (b.jolt || 0) * 0.04 * Math.sin(t * 30);
       bikeBlob.position.set(x, 0.05, z); bikeBlob.rotation.y = h;
-      var onBike = r.state === 'ride';
+      var onBike = r.state === 'ride'; rig.root.visible = r.state !== 'brawl';
       layOn += ((onBike ? 0 : 1) - layOn) * (1 - Math.exp(-10 * dt));
       bike.lean.rotation.z = layOn * 1.35 + (onBike ? Math.max(-0.4, Math.min(0.4, b.turn * 14 * Math.min(1, Math.abs(b.speed) / 6))) : 0);
       wheel += (onBike ? b.speed : 0) * dt / (bike.wheelR * R.SCALE); bike.front.rotation.x = wheel; bike.rear.rotation.x = wheel;

@@ -10,6 +10,10 @@ var sfxmod = require('../view/sfx');
 var musicMod = require('../view/music');
 var speechMod = require('../view/speech');
 var SH = require('../data/shouts');
+var brawlview = require('../view/brawlview');
+var thappadMod = require('./thappad');
+var cinecard = require('../view/cinecard');
+var fightworld = require('../sim/fightworld');
 
 var VIEWS = ['OVERHEAD', 'CHASE', 'CLOSE', 'RIDER'];
 
@@ -52,6 +56,7 @@ function createRide() {
       function cycle() { S.view = (S.view + 1) % VIEWS.length; S.ui.view.textContent = 'VIEW: ' + VIEWS[S.view]; S.cam = null; }
       S.ui.view.textContent = 'VIEW: ' + VIEWS[0]; S.ui.view.addEventListener('click', function (e) { e.stopPropagation(); cycle(); });
       var key = function (e) { if (e.code === 'KeyV' && !e.repeat) cycle(); }; window.addEventListener('keydown', key); scope.add(function () { window.removeEventListener('keydown', key); });
+      ctx.debug.startBrawl = function () { var r = S.r, best = null, bd = 1e9; r.traffic.forEach(function (v) { var d = Math.hypot(v.x - r.bike.x, v.z - r.bike.z); if (d < bd) { bd = d; best = v; } }); if (best && r.state === 'ride') { best.temper = 1; rideSim.brawl.begin(r, best); } };
       ctx.debug.cycleView = cycle; ctx.debug.teleport = function (sv) { rideSim.teleport(S.r, sv); S.cam = null; S.v.prime(sv); }; ctx.debug.rideMode = S;
       scope.add(ctx.bus.on('ride:honk', function (e) { if (e.dist < 24 && S.honkT <= 0) { S.sfx.honk(); S.honkT = 0.5; } if (e.dist < 7 && e.why === 'bike') shout(e.id, SH.NEAR, 1.4); }));
       scope.add(ctx.bus.on('ride:hit', function (e) {
@@ -67,17 +72,48 @@ function createRide() {
         if (S.t - S.pot > 3 && S.speech) { S.pot = S.t; var L = SH.HOLE; S.speech.say(L[S.nShout++ % L.length], function () { var B = S.r.bike; return { x: B.x, y: 2.9, z: B.z }; }, 1.6); }
       }));
       scope.add(ctx.bus.on('ride:wrecked', function () { say('BIKE HALAAT KHARAB! GARAGE JAO', 2.6); }));
+      /* the brawl: the fight presenter lives while r.brawl does; the buttons turn into attack, block and finisher */
+      S.bv = null; scope.add(function () { if (S.bv) { S.bv.dispose(); S.bv = null; } });
+      scope.add(ctx.bus.on('ride:brawl', function () { S.sfx.engineOff(); say('KHAAT KHAAT! BAHAR NIKLA!', 1.6); S.joinLine = 0; }));
+      scope.add(ctx.bus.on('ride:join', function (e) { if (S.speech) { var id = e.id; S.speech.say(SH.JOIN[S.nShout++ % SH.JOIN.length], function () { var q = vehicle(id); return { x: q ? q.x : S.r.bike.x, y: 3.1, z: q ? q.z : S.r.bike.z }; }, 2); } S.shake = 0.2; }));
+      scope.add(ctx.bus.on('ride:smash', function () { say('GAADI KO MAARA?!', 1.2); }));
+      scope.add(ctx.bus.on('ride:police', function () { S.sfx.honk(); setTimeout(function () { S.sfx.honk(); }, 350); say('POLICE AA GAYI!', 2); }));
+      scope.add(ctx.bus.on('fight:clear', function () { say('ROAD CLEAR!', 1.8); }));
+      scope.add(ctx.bus.on('ride:brawlEnd', function () { S.cam = null; S.sfx.start(); }));
+      var white = document.createElement('div'); white.style.cssText = 'position:fixed;inset:0;z-index:43;pointer-events:none;background:#fff;opacity:0;transition:opacity .9s'; document.body.appendChild(white);
+      var tmr = []; scope.add(function () { white.remove(); tmr.forEach(clearTimeout); if (S.thp) { S.thp.dispose(); S.thp = null; } });
+      var tapK = function (e) { if (S.thp && (e.code === 'Space' || e.code === 'KeyJ' || e.code === 'Enter') && !e.repeat) S.thp.tap(); };
+      var ab = ctx.touchRoot.querySelector('#btnAttack'), tapP = function () { if (S.thp) S.thp.tap(); };
+      window.addEventListener('keydown', tapK); if (ab) ab.addEventListener('pointerdown', tapP);
+      scope.add(function () { window.removeEventListener('keydown', tapK); if (ab) ab.removeEventListener('pointerdown', tapP); });
+      scope.add(ctx.bus.on('fight:thappad', function () {
+        S.sfx.engineOff();
+        S.thp = ctx.debug.thp = thappadMod.createThappad(ctx, { sfx: S.sfx, onGiveUp: function () {
+          cinecard.show({ title: 'GAME OVER', sub: 'Toofan fell on the road', ms: 2600 });
+          tmr.push(setTimeout(function () { ctx.ride = null; ctx.go('ride'); }, 2800));
+        }, onDone: function () {
+          white.style.transition = 'none'; white.style.opacity = 1;
+          if (S.thp) { S.thp.dispose(); S.thp = null; }
+          fightworld.revive(S.r.brawl);
+          requestAnimationFrame(function () { white.style.transition = 'opacity .9s'; white.style.opacity = 0; });
+        } });
+      }));
+      scope.add(ctx.bus.on('fight:spark', function () { S.shake = 0.3; S.sfx.bolt && S.sfx.bolt(); white.style.transition = 'none'; white.style.opacity = 0.55; requestAnimationFrame(function () { white.style.transition = 'opacity .5s'; white.style.opacity = 0; }); }));
       S.stretchName = '';
     },
     step: function (ctx, tick) {
       ctx.input.tick(tick);
       if (ctx.debug.freeze) return;
       if (ctx.input.state.pressed.finisher && S.r.state === 'ride') S.honkQ = true;
+      if (S.r.brawl && S.bv) S.bv.pre();
       rideSim.step(S.r, ctx.input);
     },
     render: function (ctx, alpha) {
       var now = ctx.now(), dt = S.last ? Math.min(0.05, (now - S.last) / 1000) : 1 / 60; S.last = now; S.t += dt;
       var r = S.r, b = r.bike, x = b.px + (b.x - b.px) * alpha, z = b.pz + (b.z - b.pz) * alpha;
+      if (r.brawl && !S.bv) { S.bv = brawlview.createBrawlView(ctx, { fw: r.brawl, anchor: r.brawl.anchor, k: R.SCALE, sfx: S.sfx }); ctx.touch.setMode('fight'); S.ui.view.style.display = 'none'; ctx.debug.brawl = S.bv; }
+      else if (!r.brawl && S.bv) { S.bv.dispose(); S.bv = null; ctx.touch.setMode('ride'); ctx.touch.setFinisherVisible(true); S.ui.view.style.display = ''; }
+      if (S.thp) { S.thp.render(dt); return; }                                           /* Maa's world has the screen */
       S.v.sync(r, alpha, dt, S.t); S.speech.update(ctx.view.camera, dt);
       var near = (ctx.view.canvas.clientHeight || 700) < 520 ? 0.82 : 1;
       var cx = x, cz = z, yaw = b.h, sp = Math.max(0, b.speed);
@@ -92,6 +128,7 @@ function createRide() {
       else shot = { x: c.x + sy * 0.2, y: 2.45, z: c.z + cy * 0.2, lx: c.x + sy * 14, ly: 1.7, lz: c.z + cy * 14, fov: 74 };
       if (S.shake > 0) { var sh = S.shake * 0.25; shot.x += (Math.random() - 0.5) * sh; shot.y += (Math.random() - 0.5) * sh; S.shake = Math.max(0, S.shake - dt * 1.5); }
       if (b.rough > 0.2 && r.state === 'ride') { shot.y += Math.sin(S.t * 41) * 0.05 * b.rough; shot.x += Math.cos(S.t * 37) * 0.04 * b.rough; }
+      if (S.bv) { shot = S.bv.update(dt, alpha); ctx.touch.setFinisherVisible(r.brawl.player.rage >= 100); }
       ctx.view.followCamera(0, 0, shot);
       ctx.view.render();
       if (r.state === 'ride') S.sfx.engine(dt, { rpm: 0.2 + 0.8 * Math.abs(b.speed) / R.TOP, thr: Math.max(0.15, ctx.input.state.my), speed: b.speed, drifting: false, braking: ctx.input.state.held.block, air: false });
@@ -103,6 +140,7 @@ function createRide() {
       var st = r.stretch;
       var nm = st ? st.name : ''; if (nm !== S.stretchName) { S.stretchName = nm; if (nm) say(nm.toUpperCase(), 1.8); }
       S.ui.stretch.textContent = nm ? nm.toUpperCase() + '  ·  ' + (st.type === 'fast' ? 'FAST' : st.type === 'jam' ? 'JAM' : st.type === 'broken' ? 'BROKEN' : 'JAM + BROKEN') : '';
+      S.ui.stretch.style.display = S.bv ? 'none' : '';
       S.ui.hp.style.width = Math.max(0, b.hp) + '%'; S.ui.hp.style.background = b.hp > 60 ? '#4ade80' : b.hp > 30 ? '#facc15' : '#f87171';
       S.ui.speed.textContent = r.state === 'ride' ? Math.round(Math.abs(b.speed) * 3.6) + ' km/h' : '';
       S.hudT = (S.hudT || 0) - dt;

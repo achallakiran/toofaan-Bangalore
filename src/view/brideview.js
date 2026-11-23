@@ -266,7 +266,7 @@ function createBrideView(scene) {
       var jy = (b.rough || 0) * 0.06 * Math.sin(t * 38) + (b.jolt || 0) * 0.05;
       bike.root.position.set(x, jy, z); bike.root.rotation.order = 'YXZ'; bike.root.rotation.y = h; bike.root.rotation.x = (b.jolt || 0) * 0.04 * Math.sin(t * 30);
       bikeBlob.position.set(x, 0.05, z); bikeBlob.rotation.y = h;
-      var onBike = r.state === 'ride';
+      var onBike = r.state === 'ride'; rig.root.visible = r.state !== 'brawl';
       layOn += ((onBike ? 0 : 1) - layOn) * (1 - Math.exp(-10 * dt));
       bike.lean.rotation.z = layOn * 1.35 + (onBike ? Math.max(-0.4, Math.min(0.4, b.turn * 14 * Math.min(1, Math.abs(b.speed) / 6))) : 0);
       wheel += (onBike ? b.speed : 0) * dt / (bike.wheelR * R.SCALE); bike.front.rotation.x = wheel; bike.rear.rotation.x = wheel;
